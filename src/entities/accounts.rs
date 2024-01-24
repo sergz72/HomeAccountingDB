@@ -7,8 +7,8 @@ use serde::Deserialize;
 use crate::time_series_data::TimeSeriesDataConfiguration;
 
 pub struct Accounts {
-    map: HashMap<usize, Account>,
-    cash_accounts: HashMap<String, usize>
+    map: HashMap<u64, Account>,
+    cash_accounts: HashMap<String, u64>
 }
 
 impl Accounts {
@@ -22,7 +22,7 @@ impl Accounts {
         Ok(Accounts{map, cash_accounts})
     }
 
-    pub fn get_cash_account(&self, account: usize) -> Result<usize, Error> {
+    pub fn get_cash_account(&self, account: u64) -> Result<u64, Error> {
         match self.map.get(&account) {
             Some(a) => {
                 match self.cash_accounts.get(&a.currency) {
@@ -34,7 +34,7 @@ impl Accounts {
         }
     }
 
-    pub fn get_name(&self, id: usize) -> Result<String, Error> {
+    pub fn get_name(&self, id: u64) -> Result<String, Error> {
         self.map.get(&id).ok_or(Error::new(ErrorKind::InvalidData, "invalid account id"))
             .map(|a|a.name.clone())
     }
@@ -42,12 +42,12 @@ impl Accounts {
 
 #[derive(Deserialize, Clone)]
 pub struct Account {
-    id: usize,
+    id: u64,
     name: String,
     #[serde(rename = "valutaCode")]
     currency: String,
     #[serde(rename = "activeTo")]
-    active_to: Option<Vec<usize>>,
+    active_to: Option<Vec<u64>>,
     #[serde(rename = "isCash")]
     is_cash: bool
 }

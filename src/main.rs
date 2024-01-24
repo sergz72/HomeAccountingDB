@@ -7,7 +7,7 @@ use std::io::Error;
 use crate::db::HomeAccountingDB;
 
 fn usage() -> Result<(), Error> {
-    println!("Usage: home_accounting_db [test_json date|test date|migrate source_folder_path|server port]data_folder_path");
+    println!("Usage: home_accounting_db [test_json date|test date|migrate source_folder_path|server port] config_file_name");
     return Ok(());
 }
 
