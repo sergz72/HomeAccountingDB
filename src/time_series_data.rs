@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::fs::File;
-use std::io::{BufReader, Error, ErrorKind, Read, Write};
+use std::io::{BufReader, Error, ErrorKind};
 use std::num::ParseIntError;
 use std::ops::{Add, Range};
 use std::sync::Arc;
@@ -38,7 +38,7 @@ impl<T: BinaryData> TimeSeriesData<T> {
                 counter += 1;
             }
             if counter > 0 {
-                let full_name = self.suffix.add("/").add(file_name.as_str());
+                let full_name = self.suffix.clone().add("/").add(file_name.as_str());
                 let mut output = counter.to_le_bytes().to_vec();
                 output.extend(data);
                 self.configuration.save_file(full_name, output)?;
@@ -47,18 +47,6 @@ impl<T: BinaryData> TimeSeriesData<T> {
         Ok(())
     }
 }
-
-pub fn load_file(file_name: String) -> Result<Vec<u8>, Error> {
-    let mut f = File::open(file_name)?;
-    let mut data = Vec::new();
-    f.read_to_end(&mut data)?;
-    Ok(data)
-}
-
-/*pub fn create_file(file_name: &String, data: Vec<u8>) -> Result<(), Error> {
-    let mut f = File::create(file_name)?;
-    f.write_all(data.as_slice())
-}*/
 
 pub struct FileInfo {
     folder: String,
@@ -85,6 +73,33 @@ impl FileInfo {
     }
 }
 
+pub trait TimeSeriesDataConfiguration<T> {
+    fn data_folder_path(&self) -> String;
+    fn load_file(&self, file_info: &FileInfo) -> Result<BTreeMap<u64, T>, Error>;
+    fn get_file_names(&self, from: u64, to: u64) -> HashMap<String, Range<u64>>;
+    fn save_file(&self, file_name: String, data: Vec<u8>) -> Result<(), Error>;
+}
+
+/*pub fn load_file(file_name: String) -> Result<Vec<u8>, Error> {
+    let mut f = File::open(file_name)?;
+    let mut data = Vec::new();
+    f.read_to_end(&mut data)?;
+    Ok(data)
+}*/
+
+/*pub fn create_file(file_name: &String, data: Vec<u8>) -> Result<(), Error> {
+    let mut f = File::create(file_name)?;
+    f.write_all(data.as_slice())
+}*/
+
+pub fn load_map<T:BinaryData>(file_name: String) -> Result<HashMap<u64, T>, Error> {
+    todo!()
+}
+
+pub fn save_map<T: BinaryData>(file_name: String, data: &HashMap<u64, T>) -> Result<(), Error> {
+    todo!()
+}
+
 fn get_file_list(data_folder_path: String) -> Result<Vec<FileInfo>, Error> {
     let files = fs::read_dir(data_folder_path.clone())?;
     let mut result = Vec::new();
@@ -102,11 +117,4 @@ fn get_file_list(data_folder_path: String) -> Result<Vec<FileInfo>, Error> {
         }
     }
     Ok(result)
-}
-
-pub trait TimeSeriesDataConfiguration<T> {
-    fn data_folder_path(&self) -> String;
-    fn load_file(&self, file_info: &FileInfo) -> Result<BTreeMap<u64, T>, Error>;
-    fn get_file_names(&self, from: u64, to: u64) -> HashMap<String, Range<u64>>;
-    fn save_file(&self, file_name: String, data: Vec<u8>) -> Result<(), Error>;
 }

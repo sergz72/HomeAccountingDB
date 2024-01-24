@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{Error, ErrorKind};
 use std::ops::Range;
 use std::sync::Arc;
+use std::time::Instant;
 use crate::entities::accounts::Accounts;
 use crate::entities::finance_operations::{FinanceOperation, FinanceRecord};
 use crate::entities::subcategories::{load_categories, Subcategory};
@@ -18,12 +19,16 @@ impl HomeAccountingDB {
     pub fn load(use_json: bool, data_folder_path: String, aes_key: [u8; 32]) -> Result<HomeAccountingDB, Error> {
         let config: Arc<dyn TimeSeriesDataConfiguration<FinanceRecord>> =
             Arc::new(HomeAccountingConfiguration{use_json, data_folder_path, aes_key});
+        let start = Instant::now();
         let data = TimeSeriesData::load(config.clone(), "/dates".to_string())?;
         let accounts = Accounts::load(config.clone())?;
         let categories = load_categories(config.clone())?;
         let subcategories = Subcategory::load(config)?;
         let mut db = HomeAccountingDB{data, accounts, categories, subcategories};
+        println!("Database loaded in {} ms", start.elapsed().as_millis());
+        let start = Instant::now();
         db.build_totals(0)?;
+        println!("Totals calculation finished in {} ms", start.elapsed().as_millis());
         Ok(db)
     }
 
