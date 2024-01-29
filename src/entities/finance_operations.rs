@@ -49,14 +49,27 @@ impl BinaryData for FinanceRecord {
 }
 
 impl FinanceRecord {
+
+    pub fn create_changes(&self) -> HashMap<u64, FinanceChanges> {
+        self.totals.clone().into_iter()
+            .map(|(account, summa)|(account, FinanceChanges::new(summa))).collect()
+    }
+
     pub fn build_changes(&self, accounts: &Accounts,
                          subcategories: &HashMap<u64, Subcategory>) -> Result<HashMap<u64, FinanceChanges>, Error> {
-        let mut ch: HashMap<u64, FinanceChanges> = self.totals.clone().into_iter()
-            .map(|(account, summa)|(account, FinanceChanges::new(summa))).collect();
+        let mut ch = self.create_changes();
         for op in &self.operations {
             op.apply(&mut ch, accounts, subcategories)?;
         }
         Ok(ch)
+    }
+
+    pub fn update_changes(&self, ch: &mut HashMap<u64, FinanceChanges>, accounts: &Accounts,
+                         subcategories: &HashMap<u64, Subcategory>) -> Result<(), Error> {
+        for op in &self.operations {
+            op.apply(ch, accounts, subcategories)?;
+        }
+        Ok(())
     }
 
     pub fn print_changes(&self, accounts: &Accounts, subcategories: &HashMap<u64, Subcategory>)

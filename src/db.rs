@@ -4,7 +4,7 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::time::Instant;
 use crate::entities::accounts::Accounts;
-use crate::entities::finance_operations::{FinanceOperation, FinanceRecord};
+use crate::entities::finance_operations::{FinanceChanges, FinanceOperation, FinanceRecord};
 use crate::entities::subcategories::{load_categories, Subcategory};
 use crate::time_series_data::{FileInfo, TimeSeriesData, TimeSeriesDataConfiguration};
 
@@ -28,19 +28,20 @@ impl HomeAccountingDB {
         println!("Database loaded in {} ms", start.elapsed().as_millis());
         let start = Instant::now();
         db.build_totals(0)?;
-        println!("Totals calculation finished in {} ms", start.elapsed().as_millis());
+        println!("Totals calculation finished in {} us", start.elapsed().as_micros());
         Ok(db)
     }
 
     fn build_totals(&mut self, from: u64) -> Result<(), Error> {
-        let mut totals: Option<HashMap<u64, i64>> = None;
+        let mut changes: Option<HashMap<u64, FinanceChanges>> = None;
         for (_, v) in &mut self.data.map.range_mut(from..) {
-            if let Some(t) = totals {
-                v.totals = t.clone()
+            if let Some(c) = &changes {
+                v.totals = c.iter()
+                    .map(|(account, changes)|(*account, changes.get_end_balance())).collect();
+            } else {
+                changes = Some(v.create_changes());
             }
-            let changes = v.build_changes(&self.accounts, &self.subcategories)?;
-            totals = Some(changes.into_iter()
-                .map(|(account, changes)|(account, changes.get_end_balance())).collect());
+            v.update_changes(changes.as_mut().unwrap(), &self.accounts, &self.subcategories)?;
         }
         Ok(())
     }
