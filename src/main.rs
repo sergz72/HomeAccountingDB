@@ -1,6 +1,6 @@
 mod db;
 mod entities;
-mod time_series_data;
+mod core;
 
 use std::env::args;
 use std::io::Error;

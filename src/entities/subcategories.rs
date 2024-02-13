@@ -1,42 +1,111 @@
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufReader, Error};
+use std::io::{Error, ErrorKind};
 use std::ops::Add;
-use std::sync::Arc;
-use serde::Deserialize;
-use crate::time_series_data::TimeSeriesDataConfiguration;
+use serde::{Deserialize, Deserializer};
+use serde::de::Unexpected;
+use crate::core::data_source::DataSource;
+
+#[derive(Clone)]
+pub enum SubcategoryCode {
+    Comb,
+    Comc,
+    Fuel,
+    Prcn,
+    Incc,
+    Expc,
+    Exch,
+    Trfr,
+    None
+}
+
+#[derive(Clone)]
+pub enum SubcategoryOperationCode {
+    Incm,
+    Expn,
+    Spcl
+}
 
 #[derive(Deserialize)]
 pub struct Subcategory {
     pub id: u64,
     pub name: String,
-    pub code: Option<String>,
-    #[serde(rename = "operationCodeId")]
-    pub operation_code: String,
+    #[serde(deserialize_with = "code_deserialize")]
+    pub code: SubcategoryCode,
+    #[serde(rename = "operationCodeId", deserialize_with = "operation_code_deserialize")]
+    pub operation_code: SubcategoryOperationCode,
     #[serde(rename = "categoryId")]
     pub category: u64
 }
 
+fn code_deserialize<'de, D>(deserializer: D) -> Result<SubcategoryCode, D::Error>
+    where
+        D: Deserializer<'de>,
+{
+    let v: Option<String> = Deserialize::deserialize(deserializer)?;
+    if v.is_none() {
+        return Ok(SubcategoryCode::None);
+    }
+    let s = v.unwrap();
+    match s.as_str() {
+        "COMB" => Ok(SubcategoryCode::Comb),
+        "COMC" => Ok(SubcategoryCode::Comc),
+        "FUEL" => Ok(SubcategoryCode::Fuel),
+        "PRCN" => Ok(SubcategoryCode::Prcn),
+        "INCC" => Ok(SubcategoryCode::Incc),
+        "EXPC" => Ok(SubcategoryCode::Expc),
+        "EXCH" => Ok(SubcategoryCode::Exch),
+        "TRFR" => Ok(SubcategoryCode::Trfr),
+        _ => Err(serde::de::Error::invalid_value(Unexpected::Str(s.as_str()), &"subcategory code"))
+    }
+}
+
+fn operation_code_deserialize<'de, D>(deserializer: D) -> Result<SubcategoryOperationCode, D::Error>
+    where
+        D: Deserializer<'de>,
+{
+    let v: String = Deserialize::deserialize(deserializer)?;
+    match v.as_str() {
+        "INCM" => Ok(SubcategoryOperationCode::Incm),
+        "EXPN" => Ok(SubcategoryOperationCode::Expn),
+        "SPCL" => Ok(SubcategoryOperationCode::Spcl),
+        _ => Err(serde::de::Error::invalid_value(Unexpected::Str(v.as_str()), &"subcategory operation code"))
+    }
+}
+
 #[derive(Deserialize)]
-struct Category {
+pub struct Category {
     pub id: u64,
     pub name: String
 }
 
-impl Subcategory {
-    pub fn load<T>(config: Arc<dyn TimeSeriesDataConfiguration<T>>) -> Result<HashMap<u64, Subcategory>, Error> {
-        let file = File::open(config.data_folder_path().add("/subcategories.json"))?;
-        let reader = BufReader::new(file);
-        let subcategories: Vec<Subcategory> = serde_json::from_reader(reader)?;
-        let result = subcategories.into_iter().map(|c|(c.id, c)).collect();
-        Ok(result)
+
+pub struct Subcategories {
+    map: HashMap<u64, Subcategory>
+}
+
+impl Subcategories {
+    pub fn load(data_folder_path: String, source: Box<dyn DataSource<Vec<Subcategory>>>)
+        -> Result<Subcategories, Error> {
+        let subcategories = source.load(data_folder_path.add("/subcategories"), true)?;
+        let map = subcategories.into_iter().map(|c|(c.id, c)).collect();
+        Ok(Subcategories{map})
+    }
+
+    pub fn get_codes(&self, id: u64) -> Result<(SubcategoryCode, SubcategoryOperationCode), Error> {
+        self.map.get(&id).ok_or(Error::new(ErrorKind::InvalidData, "invalid subcategory id"))
+            .map(|s|(s.code.clone(), s.operation_code.clone()))
     }
 }
 
-pub fn load_categories<T>(config: Arc<dyn TimeSeriesDataConfiguration<T>>) -> Result<HashMap<u64, String>, Error> {
-    let file = File::open(config.data_folder_path().add("/categories.json"))?;
-    let reader = BufReader::new(file);
-    let categories: Vec<Category> = serde_json::from_reader(reader)?;
-    let result = categories.into_iter().map(|c|(c.id, c.name)).collect();
-    Ok(result)
+pub struct Categories {
+    map: HashMap<u64, Category>
+}
+
+impl Categories {
+    pub fn load(data_folder_path: String, source: Box<dyn DataSource<Vec<Category>>>)
+               -> Result<Categories, Error> {
+        let categories = source.load(data_folder_path.add("/categories"), true)?;
+        let map = categories.into_iter().map(|c|(c.id, c)).collect();
+        Ok(Categories {map})
+    }
 }

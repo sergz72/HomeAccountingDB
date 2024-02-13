@@ -1,29 +1,34 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::io::{Error, ErrorKind};
-use std::ops::Range;
-use std::sync::Arc;
+use std::ops::Add;
 use std::time::Instant;
+use crate::core::data_source::JsonDataSource;
+use crate::core::time_series_data::TimeSeriesData;
 use crate::entities::accounts::Accounts;
 use crate::entities::finance_operations::{FinanceChanges, FinanceOperation, FinanceRecord};
-use crate::entities::subcategories::{load_categories, Subcategory};
-use crate::time_series_data::{FileInfo, TimeSeriesData, TimeSeriesDataConfiguration};
+use crate::entities::subcategories::{Categories, Subcategories};
 
 pub struct HomeAccountingDB {
-    data: TimeSeriesData<FinanceRecord>,
+    data: TimeSeriesData<FinanceRecord, Vec<FinanceOperation>>,
     accounts: Accounts,
-    categories: HashMap<u64, String>,
-    subcategories: HashMap<u64, Subcategory>
+    categories: Categories,
+    subcategories: Subcategories
 }
 
 impl HomeAccountingDB {
     pub fn load(use_json: bool, data_folder_path: String, aes_key: [u8; 32]) -> Result<HomeAccountingDB, Error> {
-        let config: Arc<dyn TimeSeriesDataConfiguration<FinanceRecord>> =
-            Arc::new(HomeAccountingConfiguration{use_json, data_folder_path, aes_key});
+        let finance_source = Box::new(JsonDataSource{});
+        let accounts_source = Box::new(JsonDataSource{});
+        let subcategories_source = Box::new(JsonDataSource{});
+        let categories_source = Box::new(JsonDataSource{});
         let start = Instant::now();
-        let data = TimeSeriesData::load(config.clone(), "/dates".to_string())?;
-        let accounts = Accounts::load(config.clone())?;
-        let categories = load_categories(config.clone())?;
-        let subcategories = Subcategory::load(config)?;
+        let data =
+            TimeSeriesData::load(data_folder_path.clone().add("/dates"), finance_source,
+                                 |fi|fi.convert_folder_name_to_number().map(|v|v/100),
+            ||FinanceRecord::new())?;
+        let accounts = Accounts::load(data_folder_path.clone(), accounts_source)?;
+        let categories = Categories::load(data_folder_path.clone(), categories_source)?;
+        let subcategories = Subcategories::load(data_folder_path, subcategories_source)?;
         let mut db = HomeAccountingDB{data, accounts, categories, subcategories};
         println!("Database loaded in {} ms", start.elapsed().as_millis());
         let start = Instant::now();
@@ -65,47 +70,4 @@ impl HomeAccountingDB {
     pub fn migrate(&self, dest_folder: String) -> Result<(), Error> {
         todo!()
     }
-
-}
-
-struct HomeAccountingConfiguration {
-    use_json: bool,
-    data_folder_path: String,
-    aes_key: [u8; 32]
-}
-
-impl TimeSeriesDataConfiguration<FinanceRecord> for HomeAccountingConfiguration {
-    fn data_folder_path(&self) -> String {
-        self.data_folder_path.clone()
-    }
-
-    fn load_file(&self, file_info: &FileInfo) -> Result<BTreeMap<u64, FinanceRecord>, Error> {
-        if self.use_json {
-            return load_finance_operations_from_json(file_info);
-        }
-        Ok(BTreeMap::new())
-    }
-
-    fn get_file_names(&self, from: u64, to: u64) -> HashMap<String, Range<u64>> {
-        (from..=to).step_by(100).map(|v| {
-            let v100 = v / 100;
-            let name = format!("financeOperations{}.bin", v100);
-            (name, v100*100..(v100+1)*100)
-        }).collect()
-    }
-
-    fn save_file(&self, file_name: String, data: Vec<u8>) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
-fn load_finance_operations_from_json(file_info: &FileInfo) -> Result<BTreeMap<u64, FinanceRecord>, Error> {
-    let mut result = BTreeMap::new();
-    if !file_info.is_folder_empty() && file_info.is_json() {
-        let date = file_info.convert_folder_name_to_number()?;
-        let reader = file_info.load_file()?;
-        let ops: Vec<FinanceOperation> = serde_json::from_reader(reader)?;
-        result.insert(date, FinanceRecord{ operations: ops, totals: HashMap::new() });
-    }
-    Ok(result)
 }

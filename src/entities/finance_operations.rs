@@ -2,11 +2,12 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io::{Error, ErrorKind};
 use serde::{Deserialize, Deserializer};
-use serde::de::Visitor;
+use serde::de::{Unexpected, Visitor};
+use crate::core::data_source::DataSource;
+use crate::core::time_series_data::Loader;
 use crate::entities::accounts::Accounts;
-use crate::entities::finance_operations::FinOpParameterValue::{DateValue, StringValue, U64Value};
-use crate::entities::subcategories::Subcategory;
-use crate::time_series_data::BinaryData;
+use crate::entities::subcategories::{Subcategories, SubcategoryCode, SubcategoryOperationCode};
+use crate::entities::common::date_deserialize;
 
 pub struct FinanceChanges {
     start_balance: i64,
@@ -39,16 +40,11 @@ pub struct FinanceRecord {
     pub totals: HashMap<u64, i64>
 }
 
-impl BinaryData for FinanceRecord {
-    fn serialize(&self, output: &mut Vec<u8>) {
-        output.extend_from_slice(&self.operations.len().to_le_bytes());
-        for op in &self.operations {
-            op.serialize(output);
-        }
-    }
-}
-
 impl FinanceRecord {
+
+    pub fn new() -> FinanceRecord {
+        FinanceRecord{operations: Vec::new(), totals: HashMap::new()}
+    }
 
     pub fn create_changes(&self) -> HashMap<u64, FinanceChanges> {
         self.totals.clone().into_iter()
@@ -56,7 +52,7 @@ impl FinanceRecord {
     }
 
     pub fn build_changes(&self, accounts: &Accounts,
-                         subcategories: &HashMap<u64, Subcategory>) -> Result<HashMap<u64, FinanceChanges>, Error> {
+                         subcategories: &Subcategories) -> Result<HashMap<u64, FinanceChanges>, Error> {
         let mut ch = self.create_changes();
         for op in &self.operations {
             op.apply(&mut ch, accounts, subcategories)?;
@@ -65,14 +61,14 @@ impl FinanceRecord {
     }
 
     pub fn update_changes(&self, ch: &mut HashMap<u64, FinanceChanges>, accounts: &Accounts,
-                         subcategories: &HashMap<u64, Subcategory>) -> Result<(), Error> {
+                         subcategories: &Subcategories) -> Result<(), Error> {
         for op in &self.operations {
             op.apply(ch, accounts, subcategories)?;
         }
         Ok(())
     }
 
-    pub fn print_changes(&self, accounts: &Accounts, subcategories: &HashMap<u64, Subcategory>)
+    pub fn print_changes(&self, accounts: &Accounts, subcategories: &Subcategories)
         -> Result<(), Error> {
         let changes = self.build_changes(accounts, subcategories)?;
         for (account, change) in changes {
@@ -84,37 +80,19 @@ impl FinanceRecord {
     }
 }
 
-struct FinOpParameters(HashMap<String, FinOpParameterValue>);
-
-impl<'de> Deserialize<'de> for FinOpParameters {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where D: Deserializer<'de>,
-    {
-        let s: Option<Vec<FinOpParameterJson>> = Deserialize::deserialize(deserializer)?;
-        if let Some(ss) = s {
-            let params = ss.into_iter()
-                .map(|p| (p.code.clone(), convert_parameter(p))).collect();
-            return Ok(FinOpParameters(params));
-        }
-        Ok(FinOpParameters(HashMap::new()))
+impl Loader<Vec<FinanceOperation>> for FinanceRecord {
+    fn load(&mut self, file_name: String, source: &Box<dyn DataSource<Vec<FinanceOperation>>>)
+            -> Result<(), Error> {
+        let mut data = source.load(file_name, false)?;
+        self.operations.append(&mut data);
+        Ok(())
     }
-}
-
-fn convert_parameter(p: FinOpParameterJson) -> FinOpParameterValue {
-    if let Some(n) = p.numeric_value {
-        return U64Value(n)
-    } else if let Some(s) = p.string_value {
-        return StringValue(s)
-    } else if let Some(d) = p.date_value {
-        return DateValue(d)
-    }
-    U64Value(0)
 }
 
 #[derive(Deserialize)]
 pub struct FinanceOperation {
     #[serde(alias = "Id", alias = "id")]
-    pub id: u64,
+    pub date: u64,
     #[serde(alias = "AccountId", alias = "accountId")]
     account: u64,
     #[serde(alias = "SubcategoryId", alias = "subcategoryId")]
@@ -123,8 +101,8 @@ pub struct FinanceOperation {
     amount: Option<u64>,
     #[serde(alias = "Summa", alias = "summa", deserialize_with = "deserialize_summa2")]
     summa: i64,
-    #[serde(alias = "FinOpProperies", alias = "finOpProperies")]
-    parameters: FinOpParameters
+    #[serde(alias = "FinOpProperies", alias = "finOpProperies", deserialize_with = "deserialize_parameters")]
+    parameters: Vec<FinOpParameter>
 }
 
 fn deserialize_summa2<'de, D>(deserializer: D) -> Result<i64, D::Error>
@@ -191,42 +169,56 @@ fn deserialize_summa3<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
     deserializer.deserialize_any(JsonStringVisitor)
 }
 
-impl BinaryData for FinanceOperation {
-    fn serialize(&self, output: &mut Vec<u8>) {
-        output.extend_from_slice(&self.id.to_le_bytes());
-        output.extend_from_slice(&self.account.to_le_bytes());
-        output.extend_from_slice(&self.subcategory.to_le_bytes());
-        output.extend_from_slice(&self.summa.to_le_bytes());
-        output.extend_from_slice(&self.amount.unwrap_or(u64::MAX).to_le_bytes());
-        output.extend_from_slice(&self.id.to_le_bytes());
-        output.extend_from_slice(&self.id.to_le_bytes());
+fn deserialize_parameters<'de, D>(deserializer: D) -> Result<Vec<FinOpParameter>, D::Error>
+    where
+        D: Deserializer<'de>,
+{
+    let v: Option<Vec<FinOpParameterJson>> = Deserialize::deserialize(deserializer)?;
+    let mut result = Vec::new();
+    if v.is_some() {
+        for p in v.unwrap() {
+            let pp = match p.code.as_str() {
+                "AMOU" => p.numeric_value.ok_or(serde::de::Error::invalid_value(Unexpected::Option, &"AMOU: numeric value expected"))
+                    .map(|v|FinOpParameter::Amou(v)),
+                "DIST" => p.numeric_value.ok_or(serde::de::Error::invalid_value(Unexpected::Option,&"DIST: numeric value expected"))
+                    .map(|v|FinOpParameter::Dist(v)),
+                "PPTO" => p.numeric_value.ok_or(serde::de::Error::invalid_value(Unexpected::Option, &"PPTO: numeric value expected"))
+                    .map(|v|FinOpParameter::Ppto(v)),
+                "SECA" => p.numeric_value.ok_or(serde::de::Error::invalid_value(Unexpected::Option, &"SECA: numeric value expected"))
+                    .map(|v|FinOpParameter::Seca(v)),
+                "NETW" => p.string_value.ok_or(serde::de::Error::invalid_value(Unexpected::Option,&"NETW: string value expected"))
+                    .map(|v|FinOpParameter::Netw(v)),
+                "TYPE" => p.string_value.ok_or(serde::de::Error::invalid_value(Unexpected::Option,&"TYPE: string value expected"))
+                    .map(|v|FinOpParameter::Typ(v)),
+                _ => return Err(serde::de::Error::invalid_value(Unexpected::Str(p.code.as_str()),
+                                                                &"finOpParameter code"))
+            }?;
+            result.push(pp);
+        }
     }
+    return Ok(result);
 }
 
 impl FinanceOperation {
     pub fn apply(&self, changes: &mut HashMap<u64, FinanceChanges>, accounts: &Accounts,
-                 subcategories: &HashMap<u64, Subcategory>) -> Result<(), Error> {
-        let subcategory = subcategories.get(&self.subcategory)
-            .ok_or(Error::new(ErrorKind::InvalidData, "unknown subcategory"))?;
-        match subcategory.operation_code.as_str() {
-            "INCM" => get_account_changes(changes, self.account).handle_income(self.summa),
-            "EXPN" => get_account_changes(changes, self.account).handle_expenditure(self.summa),
-            "SPCL" => {
-                let code = subcategory.code.as_ref()
-                    .ok_or(Error::new(ErrorKind::InvalidData, "missing subcategory code"))?;
-                match code.as_str() {
+                 subcategories: &Subcategories) -> Result<(), Error> {
+        let (code, operation_code) = subcategories.get_codes(self.subcategory)?;
+        match operation_code {
+            SubcategoryOperationCode::Incm => get_account_changes(changes, self.account).handle_income(self.summa),
+            SubcategoryOperationCode::Expn => get_account_changes(changes, self.account).handle_expenditure(self.summa),
+            SubcategoryOperationCode::Spcl => {
+                match code {
                     // Пополнение карточного счета наличными
-                    "INCC" => self.handle_incc(changes, accounts),
+                    SubcategoryCode::Incc => self.handle_incc(changes, accounts),
                     // Снятие наличных в банкомате
-                    "EXPC" => self.handle_expc(changes, accounts),
+                    SubcategoryCode::Expc => self.handle_expc(changes, accounts),
                     // Обмен валюты
-                    "EXCH" => self.handle_exch(changes),
+                    SubcategoryCode::Exch => self.handle_exch(changes),
                     // Перевод средств между платежными картами
-                    "TRFR" => self.handle_trfr(changes),
-                    _ => Err(Error::new(ErrorKind::InvalidData, "unknown subcategory code"))
+                    SubcategoryCode::Trfr => self.handle_trfr(changes),
+                    _ => Err(Error::new(ErrorKind::InvalidData, "invalid subcategory code"))
                 }
-            },
-            _ => Err(Error::new(ErrorKind::InvalidData, "unknown operation code"))
+            }
         }
     }
 
@@ -235,19 +227,27 @@ impl FinanceOperation {
         get_account_changes(changes, self.account).handle_income(self.summa)?;
         // cash account for corresponding currency code
         let cash_account = accounts.get_cash_account(self.account)?;
-        get_account_changes(changes, cash_account).handle_expenditure(self.summa)
+        if let Some(a) = cash_account {
+            get_account_changes(changes, a).handle_expenditure(self.summa)
+        } else {
+            Ok(())
+        }
     }
 
     fn handle_expc(&self, changes: &mut HashMap<u64, FinanceChanges>, accounts: &Accounts) -> Result<(), Error> {
         get_account_changes(changes, self.account).handle_expenditure(self.summa)?;
         // cash account for corresponding currency code
         let cash_account = accounts.get_cash_account(self.account)?;
-        get_account_changes(changes, cash_account).handle_income(self.summa)
+        if let Some(a) = cash_account {
+            get_account_changes(changes, a).handle_income(self.summa)
+        } else {
+            Ok(())
+        }
     }
 
     fn handle_exch(&self, changes: &mut HashMap<u64, FinanceChanges>) -> Result<(), Error> {
-        if let Some(a) = &self.amount {
-            return self.handle_trfr_with_summa(changes, (*a as i64) / 10)
+        if let Some(a) = self.amount {
+            return self.handle_trfr_with_summa(changes, (a as i64) / 10)
         }
         Ok(())
     }
@@ -258,9 +258,9 @@ impl FinanceOperation {
 
     fn handle_trfr_with_summa(&self, changes: &mut HashMap<u64, FinanceChanges>, summa: i64) -> Result<(), Error> {
         get_account_changes(changes, self.account).handle_expenditure(summa)?;
-        if let Some(p) = self.parameters.0.get(&"SECA".to_string()) {
-            if let U64Value(v) = p {
-                get_account_changes(changes, *v).handle_income(self.summa)?;
+        if self.parameters.len() == 1 {
+            if let FinOpParameter::Seca(a) = self.parameters[0] {
+                get_account_changes(changes, a).handle_income(self.summa)?;
             }
         }
         Ok(())
@@ -277,14 +277,17 @@ struct FinOpParameterJson {
     numeric_value: Option<u64>,
     #[serde(alias = "StringValue", alias = "stringValue")]
     string_value: Option<String>,
-    #[serde(alias = "DateValue", alias = "dateValue")]
-    date_value: Option<Vec<u64>>,
+    #[serde(alias = "DateValue", alias = "dateValue", deserialize_with = "date_deserialize")]
+    date_value: Option<u64>,
     #[serde(alias = "PropertyCode", alias = "propertyCode")]
     code: String
 }
 
-pub enum FinOpParameterValue {
-    U64Value(u64),
-    StringValue(String),
-    DateValue(Vec<u64>)
+pub enum FinOpParameter {
+    Amou(u64),
+    Dist(u64),
+    Netw(String),
+    Ppto(u64),
+    Seca(u64),
+    Typ(String)
 }
