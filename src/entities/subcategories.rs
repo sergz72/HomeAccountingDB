@@ -91,9 +91,8 @@ impl Subcategories {
         Ok(Subcategories{map})
     }
 
-    pub fn get_codes(&self, id: u64) -> Result<(SubcategoryCode, SubcategoryOperationCode), Error> {
+    pub fn get(&self, id: u64) -> Result<&Subcategory, Error> {
         self.map.get(&id).ok_or(Error::new(ErrorKind::InvalidData, "invalid subcategory id"))
-            .map(|s|(s.code.clone(), s.operation_code.clone()))
     }
 }
 
@@ -107,5 +106,9 @@ impl Categories {
         let categories = source.load(data_folder_path.add("/categories"), true)?;
         let map = categories.into_iter().map(|c|(c.id, c)).collect();
         Ok(Categories {map})
+    }
+
+    pub fn get(&self, id: u64) -> Result<&Category, Error> {
+        self.map.get(&id).ok_or(Error::new(ErrorKind::InvalidData, "invalid category id"))
     }
 }

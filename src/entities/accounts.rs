@@ -34,9 +34,8 @@ impl Accounts {
         }
     }
 
-    pub fn get_name(&self, id: u64) -> Result<String, Error> {
+    pub fn get(&self, id: u64) -> Result<&Account, Error> {
         self.map.get(&id).ok_or(Error::new(ErrorKind::InvalidData, "invalid account id"))
-            .map(|a|a.name.clone())
     }
 }
 

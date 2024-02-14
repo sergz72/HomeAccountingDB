@@ -9,15 +9,15 @@ use crate::entities::accounts::Accounts;
 use crate::entities::subcategories::{Subcategories, SubcategoryCode, SubcategoryOperationCode};
 use crate::entities::common::date_deserialize;
 
-pub struct FinanceChanges {
+pub struct FinanceChange {
     start_balance: i64,
     income: i64,
     expenditure: i64
 }
 
-impl FinanceChanges {
-    pub fn new(start_balance: i64) -> FinanceChanges {
-        FinanceChanges{start_balance, income: 0, expenditure: 0}
+impl FinanceChange {
+    pub fn new(start_balance: i64) -> FinanceChange {
+        FinanceChange{start_balance, income: 0, expenditure: 0}
     }
 
     pub fn get_end_balance(&self) -> i64 {
@@ -35,24 +35,54 @@ impl FinanceChanges {
     }
 }
 
+pub struct FinanceChanges {
+    changes: HashMap<u64, FinanceChange>
+}
+
+impl FinanceChanges {
+    pub fn new(totals: &HashMap<u64, i64>) -> FinanceChanges {
+        let changes = totals.iter()
+            .map(|(account, summa)|(*account, FinanceChange::new(*summa))).collect();
+        FinanceChanges{changes}
+    }
+
+    pub fn empty() -> FinanceChanges {FinanceChanges{changes: HashMap::new()}}
+
+    pub fn build_totals(&self) -> HashMap<u64, i64> {
+        self.changes.iter()
+            .map(|(account, changes)|(*account, changes.get_end_balance())).collect()
+    }
+
+    fn get_account_changes(&mut self, account: u64) -> &mut FinanceChange {
+        self.changes.entry(account).or_insert(FinanceChange::new(0))
+    }
+
+    pub fn print(&self, accounts: &Accounts, subcategories: &Subcategories) -> Result<(), Error> {
+        for (account, change) in &self.changes {
+            let acc = accounts.get(*account)?;
+            println!("{}: {} {} {} {}", acc.name, change.start_balance, change.income,
+                     change.expenditure, change.get_end_balance());
+        }
+        Ok(())
+    }
+}
+
 pub struct FinanceRecord {
     pub operations: Vec<FinanceOperation>,
     pub totals: HashMap<u64, i64>
 }
 
 impl FinanceRecord {
-
     pub fn new() -> FinanceRecord {
         FinanceRecord{operations: Vec::new(), totals: HashMap::new()}
     }
 
-    pub fn create_changes(&self) -> HashMap<u64, FinanceChanges> {
-        self.totals.clone().into_iter()
-            .map(|(account, summa)|(account, FinanceChanges::new(summa))).collect()
+    pub fn create_changes(&self) -> FinanceChanges {
+        FinanceChanges::new(&self.totals)
     }
 
     pub fn build_changes(&self, accounts: &Accounts,
-                         subcategories: &Subcategories) -> Result<HashMap<u64, FinanceChanges>, Error> {
+                         subcategories: &Subcategories) -> Result<FinanceChanges, Error> {
         let mut ch = self.create_changes();
         for op in &self.operations {
             op.apply(&mut ch, accounts, subcategories)?;
@@ -60,30 +90,32 @@ impl FinanceRecord {
         Ok(ch)
     }
 
-    pub fn update_changes(&self, ch: &mut HashMap<u64, FinanceChanges>, accounts: &Accounts,
-                         subcategories: &Subcategories) -> Result<(), Error> {
+    pub fn update_changes(&self, ch: &mut FinanceChanges, from: u64, to: u64,
+                          accounts: &Accounts, subcategories: &Subcategories) -> Result<(), Error> {
         for op in &self.operations {
-            op.apply(ch, accounts, subcategories)?;
+            if op.within(from, to) {
+                op.apply(ch, accounts, subcategories)?;
+            }
         }
         Ok(())
     }
 
-    pub fn print_changes(&self, accounts: &Accounts, subcategories: &Subcategories)
-        -> Result<(), Error> {
-        let changes = self.build_changes(accounts, subcategories)?;
-        for (account, change) in changes {
-            let name = accounts.get_name(account)?;
-            println!("{}: {} {} {} {}", name, change.start_balance, change.income,
-                     change.expenditure, change.get_end_balance());
-        }
-        Ok(())
+    pub fn get_ops(&self, date: u64) -> Vec<&FinanceOperation> {
+        self.operations.iter()
+            .filter(|op|op.date == date)
+            //.map(|op|op.clone())
+            .collect()
     }
 }
 
 impl Loader<Vec<FinanceOperation>> for FinanceRecord {
-    fn load(&mut self, file_name: String, source: &Box<dyn DataSource<Vec<FinanceOperation>>>)
+    fn load(&mut self, file_name: String, source: &Box<dyn DataSource<Vec<FinanceOperation>>>,
+            date: Option<u64>)
             -> Result<(), Error> {
         let mut data = source.load(file_name, false)?;
+        if let Some(d) = date {
+            data.iter_mut().for_each(|op|op.date = d)
+        }
         self.operations.append(&mut data);
         Ok(())
     }
@@ -109,8 +141,6 @@ fn deserialize_summa2<'de, D>(deserializer: D) -> Result<i64, D::Error>
     where
         D: Deserializer<'de>,
 {
-    // define a visitor that deserializes
-    // `ActualData` encoded as json within a string
     struct JsonStringVisitor;
 
     impl<'de> Visitor<'de> for JsonStringVisitor {
@@ -141,8 +171,6 @@ fn deserialize_summa3<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
     where
         D: Deserializer<'de>,
 {
-    // define a visitor that deserializes
-    // `ActualData` encoded as json within a string
     struct JsonStringVisitor;
 
     impl<'de> Visitor<'de> for JsonStringVisitor {
@@ -200,14 +228,14 @@ fn deserialize_parameters<'de, D>(deserializer: D) -> Result<Vec<FinOpParameter>
 }
 
 impl FinanceOperation {
-    pub fn apply(&self, changes: &mut HashMap<u64, FinanceChanges>, accounts: &Accounts,
+    pub fn apply(&self, changes: &mut FinanceChanges, accounts: &Accounts,
                  subcategories: &Subcategories) -> Result<(), Error> {
-        let (code, operation_code) = subcategories.get_codes(self.subcategory)?;
-        match operation_code {
-            SubcategoryOperationCode::Incm => get_account_changes(changes, self.account).handle_income(self.summa),
-            SubcategoryOperationCode::Expn => get_account_changes(changes, self.account).handle_expenditure(self.summa),
+        let subcategory = subcategories.get(self.subcategory)?;
+        match subcategory.operation_code {
+            SubcategoryOperationCode::Incm => changes.get_account_changes(self.account).handle_income(self.summa),
+            SubcategoryOperationCode::Expn => changes.get_account_changes(self.account).handle_expenditure(self.summa),
             SubcategoryOperationCode::Spcl => {
-                match code {
+                match subcategory.code {
                     // Пополнение карточного счета наличными
                     SubcategoryCode::Incc => self.handle_incc(changes, accounts),
                     // Снятие наличных в банкомате
@@ -222,53 +250,53 @@ impl FinanceOperation {
         }
     }
 
-    fn handle_incc(&self, changes: &mut HashMap<u64, FinanceChanges>,
+    fn handle_incc(&self, changes: &mut FinanceChanges,
                    accounts: &Accounts) -> Result<(), Error> {
-        get_account_changes(changes, self.account).handle_income(self.summa)?;
+        changes.get_account_changes(self.account).handle_income(self.summa)?;
         // cash account for corresponding currency code
         let cash_account = accounts.get_cash_account(self.account)?;
         if let Some(a) = cash_account {
-            get_account_changes(changes, a).handle_expenditure(self.summa)
+            changes.get_account_changes(a).handle_expenditure(self.summa)
         } else {
             Ok(())
         }
     }
 
-    fn handle_expc(&self, changes: &mut HashMap<u64, FinanceChanges>, accounts: &Accounts) -> Result<(), Error> {
-        get_account_changes(changes, self.account).handle_expenditure(self.summa)?;
+    fn handle_expc(&self, changes: &mut FinanceChanges, accounts: &Accounts) -> Result<(), Error> {
+        changes.get_account_changes(self.account).handle_expenditure(self.summa)?;
         // cash account for corresponding currency code
         let cash_account = accounts.get_cash_account(self.account)?;
         if let Some(a) = cash_account {
-            get_account_changes(changes, a).handle_income(self.summa)
+            changes.get_account_changes(a).handle_income(self.summa)
         } else {
             Ok(())
         }
     }
 
-    fn handle_exch(&self, changes: &mut HashMap<u64, FinanceChanges>) -> Result<(), Error> {
+    fn handle_exch(&self, changes: &mut FinanceChanges) -> Result<(), Error> {
         if let Some(a) = self.amount {
             return self.handle_trfr_with_summa(changes, (a as i64) / 10)
         }
         Ok(())
     }
 
-    fn handle_trfr(&self, changes: &mut HashMap<u64, FinanceChanges>) -> Result<(), Error> {
+    fn handle_trfr(&self, changes: &mut FinanceChanges) -> Result<(), Error> {
         self.handle_trfr_with_summa(changes, self.summa)
     }
 
-    fn handle_trfr_with_summa(&self, changes: &mut HashMap<u64, FinanceChanges>, summa: i64) -> Result<(), Error> {
-        get_account_changes(changes, self.account).handle_expenditure(summa)?;
+    fn handle_trfr_with_summa(&self, changes: &mut FinanceChanges, summa: i64) -> Result<(), Error> {
+        changes.get_account_changes(self.account).handle_expenditure(summa)?;
         if self.parameters.len() == 1 {
             if let FinOpParameter::Seca(a) = self.parameters[0] {
-                get_account_changes(changes, a).handle_income(self.summa)?;
+                changes.get_account_changes(a).handle_income(self.summa)?;
             }
         }
         Ok(())
     }
-}
 
-fn get_account_changes(changes: &mut HashMap<u64, FinanceChanges>, account: u64) -> &mut FinanceChanges {
-    changes.entry(account).or_insert(FinanceChanges::new(0))
+    pub fn within(&self, from: u64, to: u64) -> bool {
+        self.date >= from && self.date <= to
+    }
 }
 
 #[derive(Deserialize)]
