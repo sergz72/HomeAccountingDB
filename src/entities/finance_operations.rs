@@ -1,10 +1,13 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{Error, ErrorKind};
+use std::ops::Add;
 use serde::{Deserialize, Deserializer};
 use serde::de::{Unexpected, Visitor};
+use crate::core::data_source::DataSource;
+use crate::core::time_series_data::DatedSource;
 use crate::entities::accounts::Accounts;
-use crate::entities::subcategories::{Subcategories, SubcategoryCode, SubcategoryOperationCode};
+use crate::entities::subcategories::{Subcategories, Subcategory, SubcategoryCode, SubcategoryOperationCode};
 use crate::entities::common::date_deserialize;
 
 pub struct FinanceChange {

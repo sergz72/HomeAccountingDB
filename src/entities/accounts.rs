@@ -6,6 +6,7 @@ use crate::core::data_source::DataSource;
 use crate::entities::common::date_deserialize;
 
 pub struct Accounts {
+    source: Box<dyn DataSource<Vec<Account>>>,
     map: HashMap<u64, Account>,
 }
 
@@ -24,7 +25,7 @@ impl Accounts {
             }
         }
         let map = accounts.into_iter().map(|c|(c.id, c)).collect();
-        Ok(Accounts{map})
+        Ok(Accounts{source, map})
     }
 
     pub fn get_cash_account(&self, account: u64) -> Result<Option<u64>, Error> {
@@ -36,6 +37,10 @@ impl Accounts {
 
     pub fn get(&self, id: u64) -> Result<&Account, Error> {
         self.map.get(&id).ok_or(Error::new(ErrorKind::InvalidData, "invalid account id"))
+    }
+    
+    pub fn save(&self, dest: Box<dyn DataSource<Vec<Account>>>, data_folder_path: String) -> Result<(), Error>{
+        dest.save(&self.map.values().map(|a|a.clone()).collect(), data_folder_path.add("/accounts"))
     }
 }
 

@@ -49,4 +49,8 @@ impl DatedSource<FinanceRecord> for JsonDatedSource {
     fn parse_date(&self, info: &FileInfo) -> Result<u64, Error> {
         info.convert_folder_name_to_number()
     }
+
+    fn save(&self, data: &FinanceRecord, data_folder_path: &String, date: u64) -> Result<(), Error> {
+        todo!()
+    }
 }

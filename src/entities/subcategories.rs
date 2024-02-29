@@ -25,7 +25,7 @@ pub enum SubcategoryOperationCode {
     Spcl
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct Subcategory {
     pub id: u64,
     pub name: String,
@@ -72,7 +72,7 @@ fn operation_code_deserialize<'de, D>(deserializer: D) -> Result<SubcategoryOper
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct Category {
     pub id: u64,
     pub name: String
@@ -94,6 +94,10 @@ impl Subcategories {
     pub fn get(&self, id: u64) -> Result<&Subcategory, Error> {
         self.map.get(&id).ok_or(Error::new(ErrorKind::InvalidData, "invalid subcategory id"))
     }
+
+    pub fn save(&self, dest: Box<dyn DataSource<Vec<Subcategory>>>, data_folder_path: String) -> Result<(), Error>{
+        dest.save(&self.map.values().map(|a|a.clone()).collect(), data_folder_path.add("/subcategories"))
+    }
 }
 
 pub struct Categories {
@@ -110,5 +114,9 @@ impl Categories {
 
     pub fn get(&self, id: u64) -> Result<&Category, Error> {
         self.map.get(&id).ok_or(Error::new(ErrorKind::InvalidData, "invalid category id"))
+    }
+
+    pub fn save(&self, dest: Box<dyn DataSource<Vec<Category>>>, data_folder_path: String) -> Result<(), Error>{
+        dest.save(&self.map.values().map(|a|a.clone()).collect(), data_folder_path.add("/categories"))
     }
 }

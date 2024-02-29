@@ -12,6 +12,8 @@ pub struct FileWithDate {
 pub trait DatedSource<T> {
     fn load(&mut self, files: Vec<FileWithDate>) -> Result<T, Error>;
     fn parse_date(&self, info: &FileInfo) -> Result<u64, Error>;
+    
+    fn save(&self, data: &T, data_folder_path: &String, date: u64) -> Result<(), Error>;
 }
 
 pub struct TimeSeriesData<T> {
