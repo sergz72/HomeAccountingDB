@@ -3,8 +3,6 @@ use std::fmt;
 use std::io::{Error, ErrorKind};
 use serde::{Deserialize, Deserializer};
 use serde::de::{Unexpected, Visitor};
-use crate::core::data_source::DataSource;
-use crate::core::time_series_data::Loader;
 use crate::entities::accounts::Accounts;
 use crate::entities::subcategories::{Subcategories, SubcategoryCode, SubcategoryOperationCode};
 use crate::entities::common::date_deserialize;
@@ -21,7 +19,7 @@ impl FinanceChange {
     }
 
     pub fn get_end_balance(&self) -> i64 {
-        self.start_balance + self.income as i64 - self.expenditure as i64
+        self.start_balance + self.income - self.expenditure
     }
 
     pub fn handle_income(&mut self, summa: i64) -> Result<(), Error> {
@@ -57,7 +55,7 @@ impl FinanceChanges {
         self.changes.entry(account).or_insert(FinanceChange::new(0))
     }
 
-    pub fn print(&self, accounts: &Accounts, subcategories: &Subcategories) -> Result<(), Error> {
+    pub fn print(&self, accounts: &Accounts) -> Result<(), Error> {
         for (account, change) in &self.changes {
             let acc = accounts.get(*account)?;
             println!("{}: {} {} {} {}", acc.name, change.start_balance, change.income,
@@ -73,8 +71,8 @@ pub struct FinanceRecord {
 }
 
 impl FinanceRecord {
-    pub fn new() -> FinanceRecord {
-        FinanceRecord{operations: Vec::new(), totals: HashMap::new()}
+    pub fn new(operations: Vec<FinanceOperation>) -> FinanceRecord {
+        FinanceRecord{operations, totals: HashMap::new()}
     }
 
     pub fn create_changes(&self) -> FinanceChanges {
@@ -105,19 +103,6 @@ impl FinanceRecord {
             .filter(|op|op.date == date)
             //.map(|op|op.clone())
             .collect()
-    }
-}
-
-impl Loader<Vec<FinanceOperation>> for FinanceRecord {
-    fn load(&mut self, file_name: String, source: &Box<dyn DataSource<Vec<FinanceOperation>>>,
-            date: Option<u64>)
-            -> Result<(), Error> {
-        let mut data = source.load(file_name, false)?;
-        if let Some(d) = date {
-            data.iter_mut().for_each(|op|op.date = d)
-        }
-        self.operations.append(&mut data);
-        Ok(())
     }
 }
 

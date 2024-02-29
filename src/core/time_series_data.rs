@@ -1,34 +1,38 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{Error, ErrorKind};
-use std::marker::PhantomData;
 use std::num::ParseIntError;
 use std::ops::Add;
-use crate::core::data_source::DataSource;
 
-pub trait Loader<K> {
-    fn load(&mut self, file_name: String, data_source: &Box<dyn DataSource<K>>, date: Option<u64>) -> Result<(), Error>;
+pub struct FileWithDate {
+    pub name: String,
+    pub date: u64
 }
 
-pub struct TimeSeriesData<T: Loader<K>, K> {
-    pub map: BTreeMap<u64, T>,
-    phantom: PhantomData<K>
+pub trait DatedSource<T> {
+    fn load(&mut self, files: Vec<FileWithDate>) -> Result<T, Error>;
+    fn parse_date(&self, info: &FileInfo) -> Result<u64, Error>;
 }
 
-impl<T: Loader<K>, K> TimeSeriesData<T, K> {
-    pub fn load(data_folder_path: String, source: Box<dyn DataSource<K>>,
-                index_calculator: fn(u64) -> u64,
-                date_parser: fn(&FileInfo) -> Result<(u64, bool), Error>,
-                creator: fn() -> T) -> Result<TimeSeriesData<T, K>, Error> {
-        let file_list = get_file_list(data_folder_path)?;
-        let mut map = BTreeMap::new();
-        for file in file_list {
-            let (date, set_date) = date_parser(&file)?;
+pub struct TimeSeriesData<T> {
+    pub map: BTreeMap<u64, T>
+}
+
+impl<T> TimeSeriesData<T> {
+    pub fn load(data_folder_path: String, mut source: Box<dyn DatedSource<T>>,
+                index_calculator: fn(u64) -> u64) -> Result<TimeSeriesData<T>, Error> {
+        let mut file_map = HashMap::new();
+        for file in get_file_list(data_folder_path)? {
+            let date = source.parse_date(&file)?;
             let key = index_calculator(date);
-            let date_option = if set_date {Some(date)} else {None};
-            map.entry(key).or_insert(creator()).load(file.name, &source, date_option)?;
+            file_map.entry(key).or_insert(Vec::new())
+                .push(FileWithDate { name: file.name, date });
         }
-        Ok(TimeSeriesData{map, phantom: Default::default() })
+        let mut map = BTreeMap::new();
+        for (key, files) in file_map {
+            map.insert(key, source.load(files)?);
+        }
+        Ok(TimeSeriesData{map})
     }
 }
 

@@ -1,10 +1,14 @@
 mod db;
 mod entities;
 mod core;
+mod json_db_config;
+mod binary_db_config;
 
 use std::env::args;
 use std::io::Error;
+use crate::binary_db_config::BinaryDBConfiguration;
 use crate::db::HomeAccountingDB;
+use crate::json_db_config::JsonDBConfiguration;
 
 fn usage() -> Result<(), Error> {
     println!("Usage: home_accounting_db data_folder_path\n  test_json date\n  test date aes_key_file");
@@ -24,7 +28,7 @@ fn main() -> Result<(), Error> {
             if l != 3 {
                 usage()
             } else {
-                let db = HomeAccountingDB::load(true, arguments[0].clone(), aes_key)?;
+                let db = HomeAccountingDB::load(arguments[0].clone(), Box::new(JsonDBConfiguration::new()))?;
                 db.test(arguments[2].clone())
             }
         }
@@ -32,7 +36,7 @@ fn main() -> Result<(), Error> {
             if l != 4 {
                 usage()
             } else {
-                let db = HomeAccountingDB::load(false, arguments[0].clone(), aes_key)?;
+                let db = HomeAccountingDB::load(arguments[0].clone(), Box::new(BinaryDBConfiguration::new(aes_key)))?;
                 db.test(arguments[2].clone())
             }
         }
@@ -40,7 +44,7 @@ fn main() -> Result<(), Error> {
             if l != 4 {
                 usage()
             } else {
-                let db = HomeAccountingDB::load(true, arguments[2].clone(), aes_key)?;
+                let db = HomeAccountingDB::load(arguments[2].clone(), Box::new(JsonDBConfiguration::new()))?;
                 db.migrate(arguments[0].clone())
             }
         }

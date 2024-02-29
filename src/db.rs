@@ -1,15 +1,21 @@
-use std::collections::HashMap;
 use std::io::{Error, ErrorKind};
 use std::ops::Add;
 use std::time::Instant;
-use crate::core::data_source::JsonDataSource;
-use crate::core::time_series_data::TimeSeriesData;
-use crate::entities::accounts::Accounts;
+use crate::core::data_source::DataSource;
+use crate::core::time_series_data::{DatedSource, TimeSeriesData};
+use crate::entities::accounts::{Account, Accounts};
 use crate::entities::finance_operations::{FinanceChanges, FinanceOperation, FinanceRecord};
-use crate::entities::subcategories::{Categories, Subcategories};
+use crate::entities::subcategories::{Categories, Category, Subcategories, Subcategory};
+
+pub trait DBConfiguration {
+    fn get_accounts_source(&self) ->  Box<dyn DataSource<Vec<Account>>>;
+    fn get_categories_source(&self) ->  Box<dyn DataSource<Vec<Category>>>;
+    fn get_subcategories_source(&self) ->  Box<dyn DataSource<Vec<Subcategory>>>;
+    fn get_main_data_source(&self) -> Box<dyn DatedSource<FinanceRecord>>;
+}
 
 pub struct HomeAccountingDB {
-    data: TimeSeriesData<FinanceRecord, Vec<FinanceOperation>>,
+    data: TimeSeriesData<FinanceRecord>,
     accounts: Accounts,
     categories: Categories,
     subcategories: Subcategories
@@ -18,20 +24,14 @@ pub struct HomeAccountingDB {
 fn index_calculator(date: u64) -> u64 {date / 100}
 
 impl HomeAccountingDB {
-    pub fn load(use_json: bool, data_folder_path: String, aes_key: [u8; 32]) -> Result<HomeAccountingDB, Error> {
-        let finance_source = Box::new(JsonDataSource{});
-        let accounts_source = Box::new(JsonDataSource{});
-        let subcategories_source = Box::new(JsonDataSource{});
-        let categories_source = Box::new(JsonDataSource{});
+    pub fn load(data_folder_path: String, data_source: Box<dyn DBConfiguration>) -> Result<HomeAccountingDB, Error> {
         let start = Instant::now();
         let data =
-            TimeSeriesData::load(data_folder_path.clone().add("/dates"), finance_source,
-                                 index_calculator,
-                                 |fi|fi.convert_folder_name_to_number().map(|v|(v, true)),
-                                 ||FinanceRecord::new())?;
-        let accounts = Accounts::load(data_folder_path.clone(), accounts_source)?;
-        let categories = Categories::load(data_folder_path.clone(), categories_source)?;
-        let subcategories = Subcategories::load(data_folder_path, subcategories_source)?;
+            TimeSeriesData::load(data_folder_path.clone().add("/dates"), data_source.get_main_data_source(),
+                                 index_calculator)?;
+        let accounts = Accounts::load(data_folder_path.clone(), data_source.get_accounts_source())?;
+        let categories = Categories::load(data_folder_path.clone(), data_source.get_categories_source())?;
+        let subcategories = Subcategories::load(data_folder_path, data_source.get_subcategories_source())?;
         let mut db = HomeAccountingDB{data, accounts, categories, subcategories};
         println!("Database loaded in {} ms", start.elapsed().as_millis());
         let start = Instant::now();
@@ -71,7 +71,7 @@ impl HomeAccountingDB {
             .map_err(|_|Error::new(ErrorKind::InvalidInput, "invalid date"))?;
         let (_, changes) = self.build_ops_and_changes(d)?;
         println!("{}", d);
-        changes.print(&self.accounts, &self.subcategories)
+        changes.print(&self.accounts)
     }
 
     pub fn migrate(&self, dest_folder: String) -> Result<(), Error> {
