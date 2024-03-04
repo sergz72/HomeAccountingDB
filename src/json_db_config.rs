@@ -53,4 +53,8 @@ impl DatedSource<FinanceRecord> for JsonDatedSource {
     fn save(&self, data: &FinanceRecord, data_folder_path: &String, date: u64) -> Result<(), Error> {
         todo!()
     }
+
+    fn get_files(&self, data_folder_path: &String, date: u64) -> Result<Vec<FileWithDate>, Error> {
+        todo!()
+    }
 }

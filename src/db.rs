@@ -24,11 +24,12 @@ pub struct HomeAccountingDB {
 fn index_calculator(date: u64) -> u64 {date / 100}
 
 impl HomeAccountingDB {
-    pub fn load(data_folder_path: String, data_source: Box<dyn DBConfiguration>) -> Result<HomeAccountingDB, Error> {
+    pub fn load(data_folder_path: String, data_source: Box<dyn DBConfiguration>, max_active_items: u64)
+        -> Result<HomeAccountingDB, Error> {
         let start = Instant::now();
         let data =
             TimeSeriesData::load(data_folder_path.clone().add("/dates"), data_source.get_main_data_source(),
-                                 index_calculator)?;
+                                 index_calculator, max_active_items)?;
         let accounts = Accounts::load(data_folder_path.clone(), data_source.get_accounts_source())?;
         let categories = Categories::load(data_folder_path.clone(), data_source.get_categories_source())?;
         let subcategories = Subcategories::load(data_folder_path, data_source.get_subcategories_source())?;
@@ -43,7 +44,7 @@ impl HomeAccountingDB {
     fn build_totals(&mut self, from: u64) -> Result<(), Error> {
         let mut changes: Option<FinanceChanges> = None;
         let idx = index_calculator(from);
-        for (_, v) in &mut self.data.map.range_mut(idx..) {
+        for (_, v) in self.data.get_range(idx, 99999999)? {
             if let Some(c) = &changes {
                 v.totals = c.build_totals();
             }
@@ -52,9 +53,9 @@ impl HomeAccountingDB {
         Ok(())
     }
 
-    fn build_ops_and_changes(&self, date: u64) -> Result<(Vec<&FinanceOperation>, FinanceChanges), Error> {
+    fn build_ops_and_changes(&mut self, date: u64) -> Result<(Vec<&FinanceOperation>, FinanceChanges), Error> {
         let idx = index_calculator(date);
-        if let Some((_, record)) = self.data.map.range(..=idx).last() {
+        if let Some(record) = self.data.get(idx)? {
             let mut changes = record.create_changes();
             record.update_changes(&mut changes, 0, date - 1, &self.accounts, &self.subcategories)?;
             let totals = changes.build_totals();
@@ -66,7 +67,7 @@ impl HomeAccountingDB {
         }
     }
 
-    pub fn test(&self, date_str: String) -> Result<(), Error> {
+    pub fn test(&mut self, date_str: String) -> Result<(), Error> {
         let d: u64 = date_str.parse()
             .map_err(|_|Error::new(ErrorKind::InvalidInput, "invalid date"))?;
         let (_, changes) = self.build_ops_and_changes(d)?;
