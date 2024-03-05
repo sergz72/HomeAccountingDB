@@ -2,60 +2,69 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{Error, ErrorKind};
 use std::num::ParseIntError;
-use std::ops::Add;
-use std::sync::Arc;
+use std::ops::{Add, Deref};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 pub struct FileWithDate {
     pub name: String,
-    pub date: u32
+    pub date: u64
 }
 
 pub trait DatedSource<T> {
     fn load(&mut self, files: Vec<FileWithDate>) -> Result<T, Error>;
-    fn parse_date(&self, info: &FileInfo) -> Result<u32, Error>;
-    fn save(&self, data: &T, data_folder_path: &String, date: u32) -> Result<(), Error>;
-    fn get_files(&self, data_folder_path: &String, date: u32) -> Result<Vec<FileWithDate>, Error>;
+    fn parse_date(&self, info: &FileInfo) -> Result<u64, Error>;
+    fn save(&self, data: &T, data_folder_path: &String, date: u64) -> Result<(), Error>;
+    fn get_files(&self, data_folder_path: &String, date: u64) -> Result<Vec<FileWithDate>, Error>;
 }
 
 struct DataHolder<T> {
-    data: Option<T>,
-    key:  u32,
-    prev: Option<Arc<DataHolder<T>>>,
-    next: Option<Arc<DataHolder<T>>>
+    data: Option<Rc<Mutex<T>>>,
+    key:  u64,
+    prev: Option<u64>,
+    next: Option<u64>
 }
 
 impl<T> DataHolder<T> {
-    fn new(key: u32, value: T, next: Option<Arc<DataHolder<T>>>) -> DataHolder<T> {
-        DataHolder{key, data: Some(value), next, prev: None}
+    fn new(key: u64, value: T, next: Option<u64>) -> DataHolder<T> {
+        DataHolder{key, data: Some(Rc::new(Mutex::new(value))), next, prev: None}
     }
 
-    fn empty(key: u32) -> DataHolder<T> {
+    fn empty(key: u64) -> DataHolder<T> {
         DataHolder{key, data: None, next: None, prev: None}
     }
     
-    fn set(&mut self, value: T) {
-        self.data = Some(value);
+    fn set(&mut self, value: T, next: Option<u64>) {
+        _ = self.data.insert(Rc::new(Mutex::new(value)));
+        self.prev = None;
+        self.next = next;
     }
 
+    fn set_next(&mut self, next: Option<u64>) {
+        self.prev = None;
+        self.next = next;
+    }
+    
     fn unset(&mut self) {
-        self.data = None;
+        self.data.take();
     }
 }
 
 pub struct TimeSeriesData<T> {
-    source: Box<dyn DatedSource<T>>,
+    source: Mutex<Box<dyn DatedSource<T>>>,
     data_folder_path: String,
     max_active_items: usize,
-    active_items: usize,
-    map: BTreeMap<u32, Arc<DataHolder<T>>>,
-    modified: HashSet<u32>,
-    head: Option<Arc<DataHolder<T>>>,
-    tail: Option<Arc<DataHolder<T>>>
+    active_items: AtomicUsize,
+    map: BTreeMap<u64, Mutex<DataHolder<T>>>,
+    modified: Mutex<HashSet<u64>>,
+    head: Mutex<Option<u64>>,
+    tail: Mutex<Option<u64>>
 }
 
 impl<'a, T> TimeSeriesData<T> {
     pub fn load(data_folder_path: String, source: Box<dyn DatedSource<T>>,
-                index_calculator: fn(u32) -> u32, max_active_items: usize)
+                index_calculator: fn(u64) -> u64, max_active_items: usize)
         -> Result<TimeSeriesData<T>, Error> {
         let mut file_map = HashMap::new();
         for file in get_file_list(data_folder_path.clone())? {
@@ -64,8 +73,9 @@ impl<'a, T> TimeSeriesData<T> {
             file_map.entry(key).or_insert(Vec::new())
                 .push(FileWithDate { name: file.name, date });
         }
-        let mut data = TimeSeriesData{source, data_folder_path, max_active_items, active_items: 0,
-            map: BTreeMap::new(), modified: HashSet::new(), head: None, tail: None};
+        let mut data = TimeSeriesData{source: Mutex::new(source), data_folder_path, max_active_items,
+            active_items: AtomicUsize::new(0), map: BTreeMap::new(), modified: Mutex::new(HashSet::new()),
+            head: Mutex::new(None), tail: Mutex::new(None)};
         for (key, files) in file_map {
             data.load_files(key, files)?;
         }
@@ -73,108 +83,123 @@ impl<'a, T> TimeSeriesData<T> {
     }
 
     pub fn init(data_folder_path: String, source: Box<dyn DatedSource<T>>,
-                index_calculator: fn(u32) -> u32, max_active_items: usize)
+                index_calculator: fn(u64) -> u64, max_active_items: usize)
         -> Result<TimeSeriesData<T>, Error> {
         let mut map = BTreeMap::new();
         for file in get_file_list(data_folder_path.clone())? {
             let date = source.parse_date(&file)?;
             let key = index_calculator(date);
-            map.insert(key, Arc::new(DataHolder::empty(key)));
+            map.insert(key, Mutex::new(DataHolder::empty(key)));
         }
-        Ok(TimeSeriesData{source, data_folder_path, max_active_items, active_items: 0, map,
-            modified: HashSet::new(), head: None, tail: None})
+        Ok(TimeSeriesData{source: Mutex::new(source), data_folder_path, max_active_items,
+            active_items: AtomicUsize::new(0), map, modified: Mutex::new(HashSet::new()),
+            head: Mutex::new(None), tail: Mutex::new(None)})
     }
 
-    fn load_files(&mut self, key: u32, files: Vec<FileWithDate>) -> Result<(), Error> {
-        let v = self.source.load(files)?;
+    fn load_files(&mut self, key: u64, files: Vec<FileWithDate>) -> Result<(), Error> {
+        let v = self.source.lock().unwrap().load(files)?;
         self.add(key, v, false)
     }
     
-    pub fn add(&mut self, key: u32, v: T, add_to_modified: bool) -> Result<(), Error> {
+    pub fn add(&mut self, key: u64, v: T, add_to_modified: bool) -> Result<(), Error> {
         self.cleanup()?;
         let h = self.add_to_lru(key, v);
         self.map.insert(key, h);
         if add_to_modified {
-            self.modified.insert(key);
+            self.modified.lock().unwrap().insert(key);
         }
-        self.active_items += 1;
+        self.active_items.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
     
-    fn add_to_lru(&mut self, key: u32, v: T) -> Arc<DataHolder<T>> {
-        let mut h = Arc::new(DataHolder::new(key, v, self.head.clone()));
-        let a = Some(h.clone()); 
-        if let Some(hh) = &self.head {
-            hh.prev = a.clone();
-        }
-        self.head = a;
+    fn add_to_lru(&self, key: u64, v: T) -> Mutex<DataHolder<T>> {
+        let h = Mutex::new(DataHolder::new(key, v, self.head.lock().unwrap().clone()));
+        self.attach(key);
         h
     }
     
-    fn cleanup(&mut self) -> Result<(), Error> {
-        while self.active_items >= self.max_active_items {
+    fn attach(&self, key: u64) {
+        if let Some(hh) = self.head.lock().unwrap().as_ref() {
+            self.map.get(hh).unwrap().lock().unwrap().next = Some(key);
+        } else {
+            _ = self.tail.lock().unwrap().insert(key);
+        }
+        _ = self.head.lock().unwrap().insert(key);
+    }
+    
+    fn cleanup(&self) -> Result<(), Error> {
+        while self.active_items.load(Ordering::Relaxed) >= self.max_active_items {
             self.remove_by_lru()?;
         }
         Ok(())
     }
     
-    fn remove_by_lru(&mut self) -> Result<(), Error> {
-        if let Some(h) = &self.tail {
-            if self.modified.contains(&h.key) {
-                self.source.save(h.data.as_ref().unwrap(), &self.data_folder_path, h.key)?;
-                self.modified.remove(&h.key);
+    fn remove_by_lru(&self) -> Result<(), Error> {
+        if let Some(h) = self.tail.lock().unwrap().as_ref() {
+            let mut l = self.modified.lock().unwrap(); 
+            if l.contains(h) {
+                self.source.lock().unwrap().save(self.map.get(&h).unwrap().lock().unwrap().data.as_ref().unwrap().lock().unwrap().deref(), &self.data_folder_path, *h)?;
+                l.remove(h);
             }
-            self.detach(h.clone());
+            self.detach(*h);
         }
         Ok(())
     }
 
-    fn detach(&mut self, t: Arc<DataHolder<T>>) {
-        t.data = None;
-        self.active_items -= 1;
-        if let Some(next) = &t.next {
-            next.prev = t.prev.clone();
+    fn detach(&self, idx: u64) {
+        let mut data = self.map.get(&idx).unwrap().lock().unwrap();
+        data.data = None;
+        self.active_items.fetch_sub(1, Ordering::Relaxed);
+        if let Some(next) = data.next {
+            self.map.get(&next).unwrap().lock().unwrap().prev = data.prev;
         } else {
-            self.tail = t.prev.clone();
+            *self.tail.lock().unwrap() = data.prev;
         }
-        if let Some(prev) = &t.prev {
-            prev.next = t.next.clone();
+        if let Some(prev) = data.prev {
+            self.map.get(&prev).unwrap().lock().unwrap().next = data.next;
         } else {
-            self.head = t.next.clone();
+            *self.head.lock().unwrap() = data.next;
         }
     }
     
-    pub fn get(&mut self, mut idx: u32) -> Result<Option<&T>, Error> {
-        if let Some((real_idx, h)) = self.map.range_mut(..=idx).last() {
-            let v = self.get_t(*real_idx, h.clone())?;
+    pub fn get(&mut self, idx: u64) -> Result<Option<Rc<Mutex<T>>>, Error> {
+        if let Some((real_idx, d)) = self.map.range(..=idx).last() {
+            let v = self.get_t(*real_idx, d)?;
             Ok(Some(v))
         } else {
             Ok(None)
         }
     }
     
-    pub fn get_range(&mut self, from: u32, to: u32) -> Result<Vec<(u32, &mut T)>, Error> {
+    pub fn get_range(&mut self, from: u64, to: u64) -> Result<Vec<(u64, Rc<Mutex<T>>)>, Error> {
         let mut result = Vec::new();
-        for (k, v) in self.map.range(from..=to) {
-            let t = self.get_t(*k, v.clone())?;
+        for (k, d) in self.map.range(from..=to) {
+            let t = self.get_t(*k, d)?;
             result.push((*k, t));
         }
         Ok(result)
     }
 
-    fn move_to_front(&mut self, v: Arc<DataHolder<T>>) {
-        todo!()
+    fn move_to_front(&self, idx: u64, mut d: MutexGuard<DataHolder<T>>) {
+        let mut l = self.head.lock().unwrap();
+        let prev = l.clone();
+        d.set_next(prev);
+        let _ = l.insert(idx);
     }
     
-    fn get_t(&mut self, key: u32, v: Arc<DataHolder<T>>) -> Result<&mut T, Error> {
-        if let Some(d) = &mut v.data {
-            self.move_to_front(v);
+    fn get_t(&self, key: u64, d: &Mutex<DataHolder<T>>) -> Result<Rc<Mutex<T>>, Error> {
+        let v = d.lock().unwrap();
+        if let Some(d) = v.data.clone() {
+            self.move_to_front(key, v);
             return Ok(d);
         }
-        let files = self.source.get_files(&self.data_folder_path, key)?;
-        let t = self.source.load(files)?;
-        let h = self.add_to_lru(key, t);
-        Ok(h.data.as_mut().unwrap())
+        let mut l = self.source.lock().unwrap();
+        let files = l.get_files(&self.data_folder_path, key)?;
+        let t = l.load(files)?;
+        let mut v = self.map.get(&key).unwrap().lock().unwrap();
+        v.set(t, self.head.lock().unwrap().clone());
+        self.attach(key);
+        Ok(v.data.as_ref().unwrap().clone())
     }
 }
 
@@ -184,7 +209,7 @@ pub struct FileInfo {
 }
 
 impl FileInfo {
-    pub fn convert_folder_name_to_number(&self) -> Result<u32, Error> {
+    pub fn convert_folder_name_to_number(&self) -> Result<u64, Error> {
         self.folder.parse()
             .map_err(|e: ParseIntError|Error::new(ErrorKind::InvalidData, "convert_folder_name_to_number: ".to_string() + e.to_string().as_str()))
     }

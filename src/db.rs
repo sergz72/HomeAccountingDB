@@ -21,7 +21,7 @@ pub struct HomeAccountingDB {
     subcategories: Subcategories
 }
 
-fn index_calculator(date: u32) -> u32 {date / 100}
+fn index_calculator(date: u64) -> u64 {date / 100}
 
 impl HomeAccountingDB {
     pub fn load(data_folder_path: String, data_source: Box<dyn DBConfiguration>, max_active_items: usize)
@@ -41,34 +41,37 @@ impl HomeAccountingDB {
         Ok(db)
     }
 
-    fn build_totals(&mut self, from: u32) -> Result<(), Error> {
+    fn build_totals(&mut self, from: u64) -> Result<(), Error> {
         let mut changes: Option<FinanceChanges> = None;
         let idx = index_calculator(from);
         for (_, v) in self.data.get_range(idx, 99999999)? {
+            let mut vv = v.lock().unwrap();
             if let Some(c) = &changes {
-                v.totals = c.build_totals();
+                vv.totals = c.build_totals();
             }
-            changes = Some(v.build_changes(&self.accounts, &self.subcategories)?);
+            changes = Some(vv.build_changes(&self.accounts, &self.subcategories)?);
         }
         Ok(())
     }
 
-    fn build_ops_and_changes(&mut self, date: u32) -> Result<(Vec<&FinanceOperation>, FinanceChanges), Error> {
+    fn build_ops_and_changes(&mut self, date: u64) -> Result<(Vec<FinanceOperation>, FinanceChanges), Error> {
         let idx = index_calculator(date);
         if let Some(record) = self.data.get(idx)? {
-            let mut changes = record.create_changes();
-            record.update_changes(&mut changes, 0, date - 1, &self.accounts, &self.subcategories)?;
+            let r = record.lock().unwrap();
+            let mut changes = r.create_changes();
+            r.update_changes(&mut changes, 0, date - 1, &self.accounts, &self.subcategories)?;
             let totals = changes.build_totals();
             let mut changes = FinanceChanges::new(&totals);
-            record.update_changes(&mut changes, date, date, &self.accounts, &self.subcategories)?;
-            Ok((record.get_ops(date), changes))
+            r.update_changes(&mut changes, date, date, &self.accounts, &self.subcategories)?;
+            let ops = r.get_ops(date);
+            Ok((ops, changes))
         } else {
             Ok((Vec::new(), FinanceChanges::empty()))
         }
     }
 
     pub fn test(&mut self, date_str: String) -> Result<(), Error> {
-        let d: u32 = date_str.parse()
+        let d: u64 = date_str.parse()
             .map_err(|_|Error::new(ErrorKind::InvalidInput, "invalid date"))?;
         let (_, changes) = self.build_ops_and_changes(d)?;
         println!("{}", d);

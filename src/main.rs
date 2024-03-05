@@ -28,7 +28,7 @@ fn main() -> Result<(), Error> {
             if l != 3 {
                 usage()
             } else {
-                let db = HomeAccountingDB::load(arguments[0].clone(), Box::new(JsonDBConfiguration::new()), 1000000)?;
+                let mut db = HomeAccountingDB::load(arguments[0].clone(), Box::new(JsonDBConfiguration::new()), 1000000)?;
                 db.test(arguments[2].clone())
             }
         }
@@ -36,7 +36,7 @@ fn main() -> Result<(), Error> {
             if l != 4 {
                 usage()
             } else {
-                let db = HomeAccountingDB::load(arguments[0].clone(), Box::new(BinaryDBConfiguration::new(aes_key)), 1000000)?;
+                let mut db = HomeAccountingDB::load(arguments[0].clone(), Box::new(BinaryDBConfiguration::new(aes_key)), 1000000)?;
                 db.test(arguments[2].clone())
             }
         }

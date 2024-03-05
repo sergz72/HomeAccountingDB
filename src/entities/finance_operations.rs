@@ -88,7 +88,7 @@ impl FinanceRecord {
         Ok(ch)
     }
 
-    pub fn update_changes(&self, ch: &mut FinanceChanges, from: u32, to: u32,
+    pub fn update_changes(&self, ch: &mut FinanceChanges, from: u64, to: u64,
                           accounts: &Accounts, subcategories: &Subcategories) -> Result<(), Error> {
         for op in &self.operations {
             if op.within(from, to) {
@@ -98,18 +98,19 @@ impl FinanceRecord {
         Ok(())
     }
 
-    pub fn get_ops(&self, date: u32) -> Vec<&FinanceOperation> {
-        self.operations.iter()
+    pub fn get_ops(&self, date: u64) -> Vec<FinanceOperation> {
+        let ops: Vec<FinanceOperation> = self.operations.iter()
             .filter(|op|op.date == date)
-            //.map(|op|op.clone())
-            .collect()
+            .map(|op|op.copy())
+            .collect();
+        ops
     }
 }
 
 #[derive(Deserialize)]
 pub struct FinanceOperation {
     #[serde(alias = "Id", alias = "id")]
-    pub date: u32,
+    pub date: u64,
     #[serde(alias = "AccountId", alias = "accountId")]
     account: u64,
     #[serde(alias = "SubcategoryId", alias = "subcategoryId")]
@@ -279,8 +280,19 @@ impl FinanceOperation {
         Ok(())
     }
 
-    pub fn within(&self, from: u32, to: u32) -> bool {
+    pub fn within(&self, from: u64, to: u64) -> bool {
         self.date >= from && self.date <= to
+    }
+    
+    fn copy(&self) -> FinanceOperation {
+        FinanceOperation{
+            date: self.date,
+            account: self.account,
+            subcategory: self.subcategory,
+            amount: self.amount,
+            summa: self.summa,
+            parameters: self.parameters.clone(),
+        }
     }
 }
 
@@ -296,6 +308,7 @@ struct FinOpParameterJson {
     code: String
 }
 
+#[derive(Clone)]
 pub enum FinOpParameter {
     Amou(u64),
     Dist(u64),
