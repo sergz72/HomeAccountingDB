@@ -1,8 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{Error, ErrorKind};
 use std::num::ParseIntError;
 use std::ops::Add;
+use std::sync::Arc;
 
 pub struct FileWithDate {
     pub name: String,
@@ -12,28 +13,24 @@ pub struct FileWithDate {
 pub trait DatedSource<T> {
     fn load(&mut self, files: Vec<FileWithDate>) -> Result<T, Error>;
     fn parse_date(&self, info: &FileInfo) -> Result<u32, Error>;
-    fn save(&self, data: &T, data_folder_path: &String, idx: usize) -> Result<(), Error>;
+    fn save(&self, data: &T, data_folder_path: &String, date: u32) -> Result<(), Error>;
     fn get_files(&self, data_folder_path: &String, date: u32) -> Result<Vec<FileWithDate>, Error>;
 }
 
-pub trait IndexCalculator {
-    fn calculate_index(&self, date: u32) -> isize;
-}
-
-#[derive(Copy, Clone)]
 struct DataHolder<T> {
     data: Option<T>,
-    prev: Option<usize>,
-    next: Option<usize>
+    key:  u32,
+    prev: Option<Arc<DataHolder<T>>>,
+    next: Option<Arc<DataHolder<T>>>
 }
 
 impl<T> DataHolder<T> {
-    fn new(value: T, next: Option<usize>) -> DataHolder<T> {
-        DataHolder{data: Some(value), next, prev: None}
+    fn new(key: u32, value: T, next: Option<Arc<DataHolder<T>>>) -> DataHolder<T> {
+        DataHolder{key, data: Some(value), next, prev: None}
     }
 
-    fn empty() -> DataHolder<T> {
-        DataHolder{data: None, next: None, prev: None}
+    fn empty(key: u32) -> DataHolder<T> {
+        DataHolder{key, data: None, next: None, prev: None}
     }
     
     fn set(&mut self, value: T) {
@@ -45,67 +42,58 @@ impl<T> DataHolder<T> {
     }
 }
 
-pub struct TimeSeriesData<T: Copy, const CAPACITY: usize> {
+pub struct TimeSeriesData<T> {
     source: Box<dyn DatedSource<T>>,
     data_folder_path: String,
     max_active_items: usize,
     active_items: usize,
-    data: [Option<DataHolder<T>>; CAPACITY],
-    modified: HashSet<usize>,
-    head: Option<usize>,
-    tail: Option<usize>
+    map: BTreeMap<u32, Arc<DataHolder<T>>>,
+    modified: HashSet<u32>,
+    head: Option<Arc<DataHolder<T>>>,
+    tail: Option<Arc<DataHolder<T>>>
 }
 
-fn get_index(index_calculator: &Box<dyn IndexCalculator>, date: u32) -> Result<usize, Error> {
-    let idx = index_calculator.calculate_index(date);
-    if idx < 0 {
-        Err(Error::new(ErrorKind::InvalidInput, "wrong date"))
-    } else {
-        Ok(idx as usize)
-    }
-}
-
-impl<T: Copy, const CAPACITY: usize> TimeSeriesData<T, CAPACITY> {
-    pub fn load<const N: usize>(data_folder_path: String, source: Box<dyn DatedSource<T>>,
-                index_calculator: &Box<dyn IndexCalculator>, max_active_items: usize)
-        -> Result<TimeSeriesData<T, N>, Error> {
+impl<'a, T> TimeSeriesData<T> {
+    pub fn load(data_folder_path: String, source: Box<dyn DatedSource<T>>,
+                index_calculator: fn(u32) -> u32, max_active_items: usize)
+        -> Result<TimeSeriesData<T>, Error> {
         let mut file_map = HashMap::new();
         for file in get_file_list(data_folder_path.clone())? {
             let date = source.parse_date(&file)?;
-            let key = get_index(index_calculator, date)?;
+            let key = index_calculator(date);
             file_map.entry(key).or_insert(Vec::new())
                 .push(FileWithDate { name: file.name, date });
         }
         let mut data = TimeSeriesData{source, data_folder_path, max_active_items, active_items: 0,
-            data: [None; N], modified: HashSet::new(), head: None, tail: None};
+            map: BTreeMap::new(), modified: HashSet::new(), head: None, tail: None};
         for (key, files) in file_map {
             data.load_files(key, files)?;
         }
         Ok(data)
     }
 
-    pub fn init<const N: usize>(data_folder_path: String, mut source: Box<dyn DatedSource<T>>,
-                index_calculator: &Box<dyn IndexCalculator>, max_active_items: usize)
-        -> Result<TimeSeriesData<T, N>, Error> {
-        let mut data = [None; N];
+    pub fn init(data_folder_path: String, source: Box<dyn DatedSource<T>>,
+                index_calculator: fn(u32) -> u32, max_active_items: usize)
+        -> Result<TimeSeriesData<T>, Error> {
+        let mut map = BTreeMap::new();
         for file in get_file_list(data_folder_path.clone())? {
             let date = source.parse_date(&file)?;
-            let key = get_index(index_calculator, date)?;
-            data[key] = Some(DataHolder::empty());
+            let key = index_calculator(date);
+            map.insert(key, Arc::new(DataHolder::empty(key)));
         }
-        Ok(TimeSeriesData{source, data_folder_path, max_active_items, active_items: 0, data,
+        Ok(TimeSeriesData{source, data_folder_path, max_active_items, active_items: 0, map,
             modified: HashSet::new(), head: None, tail: None})
     }
 
-    fn load_files(&mut self, key: usize, files: Vec<FileWithDate>) -> Result<(), Error> {
+    fn load_files(&mut self, key: u32, files: Vec<FileWithDate>) -> Result<(), Error> {
         let v = self.source.load(files)?;
         self.add(key, v, false)
     }
     
-    pub fn add(&mut self, key: usize, v: T, add_to_modified: bool) -> Result<(), Error> {
+    pub fn add(&mut self, key: u32, v: T, add_to_modified: bool) -> Result<(), Error> {
         self.cleanup()?;
         let h = self.add_to_lru(key, v);
-        self.data.insert(key, Some(h));
+        self.map.insert(key, h);
         if add_to_modified {
             self.modified.insert(key);
         }
@@ -113,12 +101,13 @@ impl<T: Copy, const CAPACITY: usize> TimeSeriesData<T, CAPACITY> {
         Ok(())
     }
     
-    fn add_to_lru(&mut self, key: usize, v: T) -> DataHolder<T> {
-        let h = DataHolder::new(v, self.head);
-        if let Some(idx) = self.head {
-            self.data[idx].unwrap().prev = Some(key); 
+    fn add_to_lru(&mut self, key: u32, v: T) -> Arc<DataHolder<T>> {
+        let mut h = Arc::new(DataHolder::new(key, v, self.head.clone()));
+        let a = Some(h.clone()); 
+        if let Some(hh) = &self.head {
+            hh.prev = a.clone();
         }
-        self.head = Some(key);
+        self.head = a;
         h
     }
     
@@ -130,52 +119,62 @@ impl<T: Copy, const CAPACITY: usize> TimeSeriesData<T, CAPACITY> {
     }
     
     fn remove_by_lru(&mut self) -> Result<(), Error> {
-        if let Some(idx) = self.tail {
-            let mut t = self.data[idx].as_mut().unwrap();
-            if self.modified.contains(&idx) {
-                self.source.save(&t.data.unwrap(), &self.data_folder_path, idx)?;
-                self.modified.remove(&idx);
+        if let Some(h) = &self.tail {
+            if self.modified.contains(&h.key) {
+                self.source.save(h.data.as_ref().unwrap(), &self.data_folder_path, h.key)?;
+                self.modified.remove(&h.key);
             }
-            self.detach(idx, t);
+            self.detach(h.clone());
         }
         Ok(())
     }
 
-    fn detach(&mut self, idx: usize, t: &mut DataHolder<T>) {
+    fn detach(&mut self, t: Arc<DataHolder<T>>) {
         t.data = None;
         self.active_items -= 1;
-        if idx == self.head {
-            
+        if let Some(next) = &t.next {
+            next.prev = t.prev.clone();
+        } else {
+            self.tail = t.prev.clone();
+        }
+        if let Some(prev) = &t.prev {
+            prev.next = t.next.clone();
+        } else {
+            self.head = t.next.clone();
         }
     }
     
-    pub fn get(&mut self, idx: u64) -> Result<Option<&T>, Error> {
-        if let Some((_, h)) = self.map.range_mut(..=idx).last() {
-            let v = self.get_t(idx, h)?;
+    pub fn get(&mut self, mut idx: u32) -> Result<Option<&T>, Error> {
+        if let Some((real_idx, h)) = self.map.range_mut(..=idx).last() {
+            let v = self.get_t(*real_idx, h.clone())?;
             Ok(Some(v))
         } else {
             Ok(None)
         }
     }
     
-    pub fn get_range(&mut self, from: u64, to: u64) -> Result<Vec<(u64, &mut T)>, Error> {
+    pub fn get_range(&mut self, from: u32, to: u32) -> Result<Vec<(u32, &mut T)>, Error> {
         let mut result = Vec::new();
-        for (k, v) in self.map.range_mut(from..=to) {
-            let v = self.get_t(*k, v)?;
-            result.push((*k, v));
+        for (k, v) in self.map.range(from..=to) {
+            let t = self.get_t(*k, v.clone())?;
+            result.push((*k, t));
         }
         Ok(result)
     }
 
-    fn get_t(&mut self, key: u64, v: &mut DataHolder<T>) -> Result<&mut T, Error> {
-        if let Some(v) = &mut v.data {
-            return Ok(v);
+    fn move_to_front(&mut self, v: Arc<DataHolder<T>>) {
+        todo!()
+    }
+    
+    fn get_t(&mut self, key: u32, v: Arc<DataHolder<T>>) -> Result<&mut T, Error> {
+        if let Some(d) = &mut v.data {
+            self.move_to_front(v);
+            return Ok(d);
         }
         let files = self.source.get_files(&self.data_folder_path, key)?;
         let t = self.source.load(files)?;
-        v.set(t);
-        self.add_to_lru(key, v.last_access_time);
-        Ok(v.data.as_mut().unwrap())
+        let h = self.add_to_lru(key, t);
+        Ok(h.data.as_mut().unwrap())
     }
 }
 

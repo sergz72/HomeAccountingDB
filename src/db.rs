@@ -14,21 +14,21 @@ pub trait DBConfiguration {
     fn get_main_data_source(&self) -> Box<dyn DatedSource<FinanceRecord>>;
 }
 
-pub struct HomeAccountingDB<const CAPACITY: usize> {
-    data: TimeSeriesData<FinanceRecord, CAPACITY>,
+pub struct HomeAccountingDB {
+    data: TimeSeriesData<FinanceRecord>,
     accounts: Accounts,
     categories: Categories,
     subcategories: Subcategories
 }
 
-fn index_calculator(date: u32) -> isize {date / 100}
+fn index_calculator(date: u32) -> u32 {date / 100}
 
-impl<const CAPACITY: usize> HomeAccountingDB<CAPACITY> {
-    pub fn load<const N: usize>(data_folder_path: String, data_source: Box<dyn DBConfiguration>, max_active_items: usize)
-        -> Result<HomeAccountingDB<N>, Error> {
+impl HomeAccountingDB {
+    pub fn load(data_folder_path: String, data_source: Box<dyn DBConfiguration>, max_active_items: usize)
+        -> Result<HomeAccountingDB, Error> {
         let start = Instant::now();
         let data =
-            TimeSeriesData::load::<N>(data_folder_path.clone().add("/dates"), data_source.get_main_data_source(),
+            TimeSeriesData::load(data_folder_path.clone().add("/dates"), data_source.get_main_data_source(),
                                  index_calculator, max_active_items)?;
         let accounts = Accounts::load(data_folder_path.clone(), data_source.get_accounts_source())?;
         let categories = Categories::load(data_folder_path.clone(), data_source.get_categories_source())?;
@@ -41,7 +41,7 @@ impl<const CAPACITY: usize> HomeAccountingDB<CAPACITY> {
         Ok(db)
     }
 
-    fn build_totals(&mut self, from: u64) -> Result<(), Error> {
+    fn build_totals(&mut self, from: u32) -> Result<(), Error> {
         let mut changes: Option<FinanceChanges> = None;
         let idx = index_calculator(from);
         for (_, v) in self.data.get_range(idx, 99999999)? {
@@ -53,7 +53,7 @@ impl<const CAPACITY: usize> HomeAccountingDB<CAPACITY> {
         Ok(())
     }
 
-    fn build_ops_and_changes(&mut self, date: u64) -> Result<(Vec<&FinanceOperation>, FinanceChanges), Error> {
+    fn build_ops_and_changes(&mut self, date: u32) -> Result<(Vec<&FinanceOperation>, FinanceChanges), Error> {
         let idx = index_calculator(date);
         if let Some(record) = self.data.get(idx)? {
             let mut changes = record.create_changes();
@@ -68,7 +68,7 @@ impl<const CAPACITY: usize> HomeAccountingDB<CAPACITY> {
     }
 
     pub fn test(&mut self, date_str: String) -> Result<(), Error> {
-        let d: u64 = date_str.parse()
+        let d: u32 = date_str.parse()
             .map_err(|_|Error::new(ErrorKind::InvalidInput, "invalid date"))?;
         let (_, changes) = self.build_ops_and_changes(d)?;
         println!("{}", d);
