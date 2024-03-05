@@ -46,15 +46,15 @@ impl DatedSource<FinanceRecord> for JsonDatedSource {
         Ok(FinanceRecord::new(operations))
     }
 
-    fn parse_date(&self, info: &FileInfo) -> Result<u64, Error> {
+    fn parse_date(&self, info: &FileInfo) -> Result<u32, Error> {
         info.convert_folder_name_to_number()
     }
 
-    fn save(&self, data: &FinanceRecord, data_folder_path: &String, date: u64) -> Result<(), Error> {
+    fn save(&self, data: &FinanceRecord, data_folder_path: &String, date: u32) -> Result<(), Error> {
         todo!()
     }
 
-    fn get_files(&self, data_folder_path: &String, date: u64) -> Result<Vec<FileWithDate>, Error> {
+    fn get_files(&self, data_folder_path: &String, date: u32) -> Result<Vec<FileWithDate>, Error> {
         todo!()
     }
 }

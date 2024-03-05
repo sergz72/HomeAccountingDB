@@ -14,21 +14,21 @@ pub trait DBConfiguration {
     fn get_main_data_source(&self) -> Box<dyn DatedSource<FinanceRecord>>;
 }
 
-pub struct HomeAccountingDB {
-    data: TimeSeriesData<FinanceRecord>,
+pub struct HomeAccountingDB<const CAPACITY: usize> {
+    data: TimeSeriesData<FinanceRecord, CAPACITY>,
     accounts: Accounts,
     categories: Categories,
     subcategories: Subcategories
 }
 
-fn index_calculator(date: u64) -> u64 {date / 100}
+fn index_calculator(date: u32) -> isize {date / 100}
 
-impl HomeAccountingDB {
-    pub fn load(data_folder_path: String, data_source: Box<dyn DBConfiguration>, max_active_items: u64)
-        -> Result<HomeAccountingDB, Error> {
+impl<const CAPACITY: usize> HomeAccountingDB<CAPACITY> {
+    pub fn load<const N: usize>(data_folder_path: String, data_source: Box<dyn DBConfiguration>, max_active_items: usize)
+        -> Result<HomeAccountingDB<N>, Error> {
         let start = Instant::now();
         let data =
-            TimeSeriesData::load(data_folder_path.clone().add("/dates"), data_source.get_main_data_source(),
+            TimeSeriesData::load::<N>(data_folder_path.clone().add("/dates"), data_source.get_main_data_source(),
                                  index_calculator, max_active_items)?;
         let accounts = Accounts::load(data_folder_path.clone(), data_source.get_accounts_source())?;
         let categories = Categories::load(data_folder_path.clone(), data_source.get_categories_source())?;
