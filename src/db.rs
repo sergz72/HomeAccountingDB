@@ -40,6 +40,17 @@ impl HomeAccountingDB {
         println!("Totals calculation finished in {} us", start.elapsed().as_micros());
         Ok(db)
     }
+    
+    pub fn new(data_folder_path: String, data_source: Box<dyn DBConfiguration>, max_active_items: usize)
+        -> Result<HomeAccountingDB, Error> {
+        let data =
+            TimeSeriesData::new(data_folder_path.clone().add("/dates"), data_source.get_main_data_source(),
+                                 max_active_items);
+        let accounts = Accounts::load(data_folder_path.clone(), data_source.get_accounts_source())?;
+        let categories = Categories::load(data_folder_path.clone(), data_source.get_categories_source())?;
+        let subcategories = Subcategories::load(data_folder_path, data_source.get_subcategories_source())?;
+        Ok(HomeAccountingDB{data, accounts, categories, subcategories})
+    }
 
     fn build_totals(&mut self, from: u64) -> Result<(), Error> {
         let mut changes: Option<FinanceChanges> = None;
@@ -75,7 +86,18 @@ impl HomeAccountingDB {
             .map_err(|_|Error::new(ErrorKind::InvalidInput, "invalid date"))?;
         let (_, changes) = self.build_ops_and_changes(d)?;
         println!("{}", d);
-        changes.print(&self.accounts)
+        changes.print(&self.accounts)?;
+        println!("{}", self.data.get_active_items());
+        Ok(())
+    }
+    
+    pub fn test_lru(&mut self, mut items: usize) -> Result<(), Error>{
+        while items > 0 {
+            self.data.add(items as u64, FinanceRecord::new(Vec::new()), false)?;
+            items -= 1;
+        }
+        println!("{}", self.data.get_active_items());
+        Ok(())
     }
 
     pub fn migrate(&self, dest_folder: String) -> Result<(), Error> {

@@ -73,13 +73,17 @@ impl<'a, T> TimeSeriesData<T> {
             file_map.entry(key).or_insert(Vec::new())
                 .push(FileWithDate { name: file.name, date });
         }
-        let mut data = TimeSeriesData{source: Mutex::new(source), data_folder_path, max_active_items,
-            active_items: AtomicUsize::new(0), map: BTreeMap::new(), modified: Mutex::new(HashSet::new()),
-            head: Mutex::new(None), tail: Mutex::new(None)};
+        let mut data = TimeSeriesData::new(data_folder_path, source, max_active_items);
         for (key, files) in file_map {
             data.load_files(key, files)?;
         }
         Ok(data)
+    }
+    
+    pub fn new(data_folder_path: String, source: Box<dyn DatedSource<T>>, max_active_items: usize) -> TimeSeriesData<T> {
+        TimeSeriesData{source: Mutex::new(source), data_folder_path, max_active_items,
+            active_items: AtomicUsize::new(0), map: BTreeMap::new(), modified: Mutex::new(HashSet::new()),
+            head: Mutex::new(None), tail: Mutex::new(None)}
     }
 
     pub fn init(data_folder_path: String, source: Box<dyn DatedSource<T>>,
@@ -200,6 +204,10 @@ impl<'a, T> TimeSeriesData<T> {
         v.set(t, self.head.lock().unwrap().clone());
         self.attach(key);
         Ok(v.data.as_ref().unwrap().clone())
+    }
+    
+    pub fn get_active_items(&self) -> usize {
+        self.active_items.load(Ordering::Relaxed)
     }
 }
 

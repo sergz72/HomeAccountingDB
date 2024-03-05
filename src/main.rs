@@ -19,7 +19,7 @@ fn usage() -> Result<(), Error> {
 fn main() -> Result<(), Error> {
     let arguments: Vec<String> = args().skip(1).collect();
     let l = arguments.len();
-    if l < 3 || l > 4 {
+    if l < 2 || l > 4 {
         return usage();
     }
     let aes_key = [0u8; 32];
@@ -30,6 +30,14 @@ fn main() -> Result<(), Error> {
             } else {
                 let mut db = HomeAccountingDB::load(arguments[0].clone(), Box::new(JsonDBConfiguration::new()), 1000000)?;
                 db.test(arguments[2].clone())
+            }
+        }
+        "test_lru" => {
+            if l != 2 {
+                usage()
+            } else {
+                let mut db = HomeAccountingDB::new(arguments[0].clone(), Box::new(JsonDBConfiguration::new()), 500)?;
+                db.test_lru(1000)
             }
         }
         "test" => {
