@@ -147,15 +147,17 @@ impl<'a, T> TimeSeriesData<T> {
                                                  &self.data_folder_path, *h)?;
                 l.remove(h);
             }
+            let mut data = self.map.get(h).unwrap().lock().unwrap();
+            data.data = None;
+            drop(data);
+            self.active_items.fetch_sub(1, Ordering::Relaxed);
             self.detach(*h, lock);
         }
         Ok(())
     }
 
     fn detach(&self, idx: u64, mut l: MutexGuard<Option<u64>>) {
-        let mut data = self.map.get(&idx).unwrap().lock().unwrap();
-        data.data = None;
-        self.active_items.fetch_sub(1, Ordering::Relaxed);
+        let data = self.map.get(&idx).unwrap().lock().unwrap();
         if let Some(next) = data.next {
             self.map.get(&next).unwrap().lock().unwrap().prev = data.prev;
         } else {
