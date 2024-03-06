@@ -179,9 +179,10 @@ impl<'a, T> TimeSeriesData<T> {
     
     pub fn get_range(&self, from: u64, to: u64) -> Result<Vec<(u64, Rc<Mutex<T>>)>, Error> {
         let mut result = Vec::new();
-        for (k, d) in self.map.range(from..=to) {
-            let t = self.get_t(*k, d)?;
-            result.push((*k, t));
+        for (pk, d) in self.map.range(from..=to) {
+            let k = *pk;
+            let t = self.get_t(k, d)?;
+            result.push((k, t));
         }
         Ok(result)
     }
