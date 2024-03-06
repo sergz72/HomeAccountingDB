@@ -112,7 +112,6 @@ impl<'a, T> TimeSeriesData<T> {
         if add_to_modified {
             self.modified.lock().unwrap().insert(key);
         }
-        self.active_items.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
     
@@ -124,11 +123,12 @@ impl<'a, T> TimeSeriesData<T> {
     
     fn attach(&self, key: u64) {
         if let Some(hh) = self.head.lock().unwrap().as_ref() {
-            self.map.get(hh).unwrap().lock().unwrap().next = Some(key);
+            self.map.get(hh).unwrap().lock().unwrap().prev = Some(key);
         } else {
             _ = self.tail.lock().unwrap().insert(key);
         }
         _ = self.head.lock().unwrap().insert(key);
+        self.active_items.fetch_add(1, Ordering::Relaxed);
     }
     
     fn cleanup(&self) -> Result<(), Error> {
@@ -139,25 +139,27 @@ impl<'a, T> TimeSeriesData<T> {
     }
     
     fn remove_by_lru(&self) -> Result<(), Error> {
-        if let Some(h) = self.tail.lock().unwrap().as_ref() {
+        let lock = self.tail.lock().unwrap();
+        if let Some(h) = lock.as_ref() {
             let mut l = self.modified.lock().unwrap(); 
             if l.contains(h) {
-                self.source.lock().unwrap().save(self.map.get(&h).unwrap().lock().unwrap().data.as_ref().unwrap().lock().unwrap().deref(), &self.data_folder_path, *h)?;
+                self.source.lock().unwrap().save(self.map.get(&h).unwrap().lock().unwrap().data.as_ref().unwrap().lock().unwrap().deref(),
+                                                 &self.data_folder_path, *h)?;
                 l.remove(h);
             }
-            self.detach(*h);
+            self.detach(*h, lock);
         }
         Ok(())
     }
 
-    fn detach(&self, idx: u64) {
+    fn detach(&self, idx: u64, mut l: MutexGuard<Option<u64>>) {
         let mut data = self.map.get(&idx).unwrap().lock().unwrap();
         data.data = None;
         self.active_items.fetch_sub(1, Ordering::Relaxed);
         if let Some(next) = data.next {
             self.map.get(&next).unwrap().lock().unwrap().prev = data.prev;
         } else {
-            *self.tail.lock().unwrap() = data.prev;
+            *l = data.prev;
         }
         if let Some(prev) = data.prev {
             self.map.get(&prev).unwrap().lock().unwrap().next = data.next;
@@ -166,7 +168,7 @@ impl<'a, T> TimeSeriesData<T> {
         }
     }
     
-    pub fn get(&mut self, idx: u64) -> Result<Option<Rc<Mutex<T>>>, Error> {
+    pub fn get(&self, idx: u64) -> Result<Option<Rc<Mutex<T>>>, Error> {
         if let Some((real_idx, d)) = self.map.range(..=idx).last() {
             let v = self.get_t(*real_idx, d)?;
             Ok(Some(v))
@@ -175,7 +177,7 @@ impl<'a, T> TimeSeriesData<T> {
         }
     }
     
-    pub fn get_range(&mut self, from: u64, to: u64) -> Result<Vec<(u64, Rc<Mutex<T>>)>, Error> {
+    pub fn get_range(&self, from: u64, to: u64) -> Result<Vec<(u64, Rc<Mutex<T>>)>, Error> {
         let mut result = Vec::new();
         for (k, d) in self.map.range(from..=to) {
             let t = self.get_t(*k, d)?;
@@ -184,23 +186,28 @@ impl<'a, T> TimeSeriesData<T> {
         Ok(result)
     }
 
-    fn move_to_front(&self, idx: u64, mut d: MutexGuard<DataHolder<T>>) {
-        let mut l = self.head.lock().unwrap();
-        let prev = l.clone();
-        d.set_next(prev);
-        let _ = l.insert(idx);
+    fn move_to_front(&self, idx: u64) {
+        self.detach(idx, self.tail.lock().unwrap());
+        let mut head = self.head.lock().unwrap();
+        let head_idx = head.clone();
+        let mut v = self.map.get(&idx).unwrap().lock().unwrap();
+        v.next = head_idx;
+        v.prev = None;
+        let _ = head.insert(idx);
+        let _ = self.map.get(&head_idx.unwrap()).unwrap().lock().unwrap().prev.insert(idx);
     }
     
     fn get_t(&self, key: u64, d: &Mutex<DataHolder<T>>) -> Result<Rc<Mutex<T>>, Error> {
-        let v = d.lock().unwrap();
+        let mut v = d.lock().unwrap();
         if let Some(d) = v.data.clone() {
-            self.move_to_front(key, v);
+            drop(v);
+            self.move_to_front(key);
             return Ok(d);
         }
+        self.cleanup()?;
         let mut l = self.source.lock().unwrap();
         let files = l.get_files(&self.data_folder_path, key)?;
         let t = l.load(files)?;
-        let mut v = self.map.get(&key).unwrap().lock().unwrap();
         v.set(t, self.head.lock().unwrap().clone());
         self.attach(key);
         Ok(v.data.as_ref().unwrap().clone())
@@ -240,4 +247,110 @@ fn get_file_list(data_folder_path: String) -> Result<Vec<FileInfo>, Error> {
         }
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Error;
+    use crate::core::time_series_data::{DatedSource, FileInfo, FileWithDate, TimeSeriesData};
+
+    struct TestData{}
+    struct TestDataSource{}
+
+    impl DatedSource<TestData> for TestDataSource {
+        fn load(&mut self, files: Vec<FileWithDate>) -> Result<TestData, Error> {
+            Ok(TestData{})
+        }
+
+        fn parse_date(&self, info: &FileInfo) -> Result<u64, Error> {
+            todo!()
+        }
+
+        fn save(&self, data: &TestData, data_folder_path: &String, date: u64) -> Result<(), Error> {
+            todo!()
+        }
+
+        fn get_files(&self, data_folder_path: &String, date: u64) -> Result<Vec<FileWithDate>, Error> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn test_lru_list() -> Result<(), Error> {
+        let mut data = TimeSeriesData::new("".to_string(), Box::new(TestDataSource{}), 500);
+        for i in 0..3 {
+            data.add(i, TestData{}, false)?;
+        }
+        let head = data.head.lock().unwrap().unwrap();
+        assert_eq!(head, 2);
+        assert_eq!(data.tail.lock().unwrap().unwrap(), 0);
+        let item = data.map.get(&head).unwrap().lock().unwrap();
+        assert_eq!(item.prev, None);
+        assert_eq!(item.next, Some(1));
+        let item = data.map.get(&1).unwrap().lock().unwrap();
+        assert_eq!(item.prev, Some(2));
+        assert_eq!(item.next, Some(0));
+        let item = data.map.get(&0).unwrap().lock().unwrap();
+        assert_eq!(item.prev, Some(1));
+        assert_eq!(item.next, None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_lru_expire_and_move_to_front() -> Result<(), Error> {
+        let mut data = TimeSeriesData::new("".to_string(), Box::new(TestDataSource{}), 500);
+        for i in 0..1000 {
+            data.add(i, TestData{}, false)?;
+        }
+        let head = data.head.lock().unwrap().unwrap();
+        assert_eq!(head, 999);
+        assert_eq!(data.tail.lock().unwrap().unwrap(), 500);
+        assert_eq!(data.get_active_items(), 500);
+
+        let item = data.map.get(&500).unwrap().lock().unwrap();
+        assert_eq!(item.prev, Some(501));
+        assert_eq!(item.next, None);
+        drop(item);
+        let item = data.map.get(&999).unwrap().lock().unwrap();
+        assert_eq!(item.prev, None);
+        assert_eq!(item.next, Some(998));
+        drop(item);
+        
+        let _ = data.get(501)?;
+
+        let head = data.head.lock().unwrap().unwrap();
+        assert_eq!(head, 501);
+        assert_eq!(data.tail.lock().unwrap().unwrap(), 500);
+        let item = data.map.get(&head).unwrap().lock().unwrap();
+        assert_eq!(item.prev, None);
+        assert_eq!(item.next, Some(999));
+        let item = data.map.get(&998).unwrap().lock().unwrap();
+        assert_eq!(item.prev, Some(999));
+        assert_eq!(item.next, Some(997));
+
+        let item = data.map.get(&500).unwrap().lock().unwrap();
+        assert_eq!(item.prev, Some(502));
+        assert_eq!(item.next, None);
+        let item = data.map.get(&502).unwrap().lock().unwrap();
+        assert_eq!(item.prev, Some(503));
+        assert_eq!(item.next, Some(500));
+        
+        Ok(())
+    }
+
+    #[test]
+    fn test_lru_load() -> Result<(), Error> {
+        let mut data = TimeSeriesData::new("".to_string(), Box::new(TestDataSource {}), 500);
+        for i in 0..1000 {
+            data.add(i, TestData {}, false)?;
+        }
+
+        let _ = data.get(499)?;
+        let head = data.head.lock().unwrap().unwrap();
+        assert_eq!(head, 499);
+        assert_eq!(data.tail.lock().unwrap().unwrap(), 501);
+        assert_eq!(data.get_active_items(), 500);
+        
+        Ok(())
+    }
 }
