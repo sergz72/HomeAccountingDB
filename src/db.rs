@@ -21,15 +21,24 @@ pub struct HomeAccountingDB {
     subcategories: Subcategories
 }
 
-fn index_calculator(date: u64) -> u64 {date / 100}
+const MIN_YEAR: isize = 2012;
+const MIN_MONTH: isize = 6;
+
+fn index_calculator(mut date: usize) -> isize {
+    date /= 100;
+    let year = (date / 100) as isize;
+    let month = (date % 100) as isize;
+    month - MIN_MONTH + (year - MIN_YEAR) * 12
+}
 
 impl HomeAccountingDB {
-    pub fn load(data_folder_path: String, data_source: Box<dyn DBConfiguration>, max_active_items: usize)
+    pub fn load(data_folder_path: String, data_source: Box<dyn DBConfiguration>,
+                max_active_items: usize, capacity: usize)
         -> Result<HomeAccountingDB, Error> {
         let start = Instant::now();
         let data =
             TimeSeriesData::load(data_folder_path.clone().add("/dates"), data_source.get_main_data_source(),
-                                 index_calculator, max_active_items)?;
+                                 index_calculator, max_active_items, capacity)?;
         let accounts = Accounts::load(data_folder_path.clone(), data_source.get_accounts_source())?;
         let categories = Categories::load(data_folder_path.clone(), data_source.get_categories_source())?;
         let subcategories = Subcategories::load(data_folder_path, data_source.get_subcategories_source())?;
@@ -41,21 +50,21 @@ impl HomeAccountingDB {
         Ok(db)
     }
     
-    pub fn new(data_folder_path: String, data_source: Box<dyn DBConfiguration>, max_active_items: usize)
+    pub fn new(data_folder_path: String, data_source: Box<dyn DBConfiguration>,
+               max_active_items: usize, capacity: usize)
         -> Result<HomeAccountingDB, Error> {
         let data =
             TimeSeriesData::new(data_folder_path.clone().add("/dates"), data_source.get_main_data_source(),
-                                 max_active_items);
+                                 max_active_items, capacity, index_calculator);
         let accounts = Accounts::load(data_folder_path.clone(), data_source.get_accounts_source())?;
         let categories = Categories::load(data_folder_path.clone(), data_source.get_categories_source())?;
         let subcategories = Subcategories::load(data_folder_path, data_source.get_subcategories_source())?;
         Ok(HomeAccountingDB{data, accounts, categories, subcategories})
     }
 
-    fn build_totals(&mut self, from: u64) -> Result<(), Error> {
+    fn build_totals(&mut self, from: usize) -> Result<(), Error> {
         let mut changes: Option<FinanceChanges> = None;
-        let idx = index_calculator(from);
-        for (_, v) in self.data.get_range(idx, 99999999)? {
+        for (_, v) in self.data.get_range(from, 99999999)? {
             let mut vv = v.lock().unwrap();
             if let Some(c) = &changes {
                 vv.totals = c.build_totals();
@@ -65,9 +74,8 @@ impl HomeAccountingDB {
         Ok(())
     }
 
-    fn build_ops_and_changes(&mut self, date: u64) -> Result<(Vec<FinanceOperation>, FinanceChanges), Error> {
-        let idx = index_calculator(date);
-        if let Some(record) = self.data.get(idx)? {
+    fn build_ops_and_changes(&mut self, date: usize) -> Result<(Vec<FinanceOperation>, FinanceChanges), Error> {
+        if let Some(record) = self.data.get(date)? {
             let r = record.lock().unwrap();
             let mut changes = r.create_changes();
             r.update_changes(&mut changes, 0, date - 1, &self.accounts, &self.subcategories)?;
@@ -82,7 +90,7 @@ impl HomeAccountingDB {
     }
 
     pub fn test(&mut self, date_str: String) -> Result<(), Error> {
-        let d: u64 = date_str.parse()
+        let d: usize = date_str.parse()
             .map_err(|_|Error::new(ErrorKind::InvalidInput, "invalid date"))?;
         let (_, changes) = self.build_ops_and_changes(d)?;
         println!("{}", d);
@@ -93,7 +101,7 @@ impl HomeAccountingDB {
     
     pub fn test_lru(&mut self, mut items: usize) -> Result<(), Error>{
         while items > 0 {
-            self.data.add(items as u64, FinanceRecord::new(Vec::new()), false)?;
+            self.data.add(items, FinanceRecord::new(Vec::new()), false)?;
             items -= 1;
         }
         println!("{}", self.data.get_active_items());

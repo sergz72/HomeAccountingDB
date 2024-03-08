@@ -28,7 +28,9 @@ fn main() -> Result<(), Error> {
             if l != 3 {
                 usage()
             } else {
-                let mut db = HomeAccountingDB::load(arguments[0].clone(), Box::new(JsonDBConfiguration::new()), 1000000)?;
+                let mut db = HomeAccountingDB::load(arguments[0].clone(),
+                                                    Box::new(JsonDBConfiguration::new()),
+                                                    1000000, 1000)?;
                 db.test(arguments[2].clone())
             }
         }
@@ -36,7 +38,9 @@ fn main() -> Result<(), Error> {
             if l != 2 {
                 usage()
             } else {
-                let mut db = HomeAccountingDB::new(arguments[0].clone(), Box::new(JsonDBConfiguration::new()), 500)?;
+                let mut db = HomeAccountingDB::new(arguments[0].clone(),
+                                                   Box::new(JsonDBConfiguration::new()),
+                                                   500, 1000)?;
                 db.test_lru(1000)
             }
         }
@@ -44,7 +48,9 @@ fn main() -> Result<(), Error> {
             if l != 4 {
                 usage()
             } else {
-                let mut db = HomeAccountingDB::load(arguments[0].clone(), Box::new(BinaryDBConfiguration::new(aes_key)), 1000000)?;
+                let mut db = HomeAccountingDB::load(arguments[0].clone(),
+                                                    Box::new(BinaryDBConfiguration::new(aes_key)),
+                                                    1000000, 1000)?;
                 db.test(arguments[2].clone())
             }
         }
@@ -52,7 +58,9 @@ fn main() -> Result<(), Error> {
             if l != 4 {
                 usage()
             } else {
-                let db = HomeAccountingDB::load(arguments[2].clone(), Box::new(JsonDBConfiguration::new()), 1000000)?;
+                let db = HomeAccountingDB::load(arguments[2].clone(),
+                                                Box::new(JsonDBConfiguration::new()),
+                                                1000000, 1000)?;
                 db.migrate(arguments[0].clone())
             }
         }

@@ -88,7 +88,7 @@ impl FinanceRecord {
         Ok(ch)
     }
 
-    pub fn update_changes(&self, ch: &mut FinanceChanges, from: u64, to: u64,
+    pub fn update_changes(&self, ch: &mut FinanceChanges, from: usize, to: usize,
                           accounts: &Accounts, subcategories: &Subcategories) -> Result<(), Error> {
         for op in &self.operations {
             if op.within(from, to) {
@@ -98,7 +98,7 @@ impl FinanceRecord {
         Ok(())
     }
 
-    pub fn get_ops(&self, date: u64) -> Vec<FinanceOperation> {
+    pub fn get_ops(&self, date: usize) -> Vec<FinanceOperation> {
         let ops: Vec<FinanceOperation> = self.operations.iter()
             .filter(|op|op.date == date)
             .map(|op|op.copy())
@@ -110,7 +110,7 @@ impl FinanceRecord {
 #[derive(Deserialize)]
 pub struct FinanceOperation {
     #[serde(alias = "Id", alias = "id")]
-    pub date: u64,
+    pub date: usize,
     #[serde(alias = "AccountId", alias = "accountId")]
     account: u64,
     #[serde(alias = "SubcategoryId", alias = "subcategoryId")]
@@ -280,7 +280,7 @@ impl FinanceOperation {
         Ok(())
     }
 
-    pub fn within(&self, from: u64, to: u64) -> bool {
+    pub fn within(&self, from: usize, to: usize) -> bool {
         self.date >= from && self.date <= to
     }
     
